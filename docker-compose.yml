@@ -14,8 +14,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
-    image: soap-notes-backend:local
-    container_name: soap-notes-backend
+    image: hive-notes-backend:local
+    container_name: hive-notes-backend
     ports:
       - "8000:8000"
     # Mount the .env file so secrets never end up baked into the image.
