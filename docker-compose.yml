@@ -1,0 +1,37 @@
+# Local development compose file.
+# Builds the backend image and runs it with your .env file mounted.
+#
+# Usage:
+#   cp .env.example .env          # fill in your Azure credentials
+#   docker compose up --build
+#
+# The app will be available at http://localhost:8000
+# Interactive API docs:           http://localhost:8000/docs
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: soap-notes-backend:local
+    container_name: soap-notes-backend
+    ports:
+      - "8000:8000"
+    # Mount the .env file so secrets never end up baked into the image.
+    # In Azure Container Apps these are set as environment variables / secrets directly.
+    env_file:
+      - .env
+    # Override log level for local development
+    environment:
+      - UVICORN_LOG_LEVEL=debug
+    # Restart on crash during development
+    restart: unless-stopped
+    # Forward the HEALTHCHECK so `docker ps` shows status
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3

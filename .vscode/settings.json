@@ -1,0 +1,13 @@
+{
+    // Tell the Python extension that the workspace root is the source root
+    // so imports like `from app.config import settings` resolve correctly.
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}"
+    ],
+    // Auto-discover the virtual environment created in .venv/
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    // Show inlay hints for parameter names and return types while browsing code
+    "python.analysis.inlayHints.pytestParameters": true,
+    // Keep the integrated terminal in the backend folder
+    "terminal.integrated.cwd": "${workspaceFolder}"
+}

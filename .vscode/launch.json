@@ -1,0 +1,49 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // ── Primary: FastAPI via uvicorn (full breakpoint support) ──────────
+            // Launches uvicorn programmatically inside the Python debugger so
+            // breakpoints in any file under app/ are hit normally.
+            "name": "FastAPI: debug (uvicorn)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "main:app",
+                "--host", "0.0.0.0",
+                "--port", "8000",
+                "--reload",                 // hot-reload on file save
+                "--log-level", "debug"
+            ],
+            "jinja": true,
+            "justMyCode": false,            // step into library code when needed
+            "envFile": "${workspaceFolder}/.env",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        },
+        {
+            // ── Alternative: attach to a running uvicorn process ───────────────
+            // Useful when you start uvicorn yourself (e.g. via docker compose)
+            // and want to attach the debugger without restarting the process.
+            //
+            // Start the server with:
+            //   python -m debugpy --listen 5678 --wait-for-client \
+            //          -m uvicorn main:app --host 0.0.0.0 --port 8000
+            "name": "FastAPI: attach (port 5678)",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}",
+                    "remoteRoot": "."
+                }
+            ],
+            "justMyCode": false
+        }
+    ]
+}
