@@ -1,0 +1,22 @@
+# --- Web framework ---
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart==0.0.19
+aiofiles>=23.2.1
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+httpx>=0.27.0
+
+# --- LangGraph ---
+langgraph>=0.2.0
+aiohttp>=3.9.0              # async HTTP — required by langgraph internals
+
+# --- Azure SDKs ---
+azure-core>=1.30.0          # azure.core.exceptions used directly across nodes
+azure-storage-blob>=12.19.0
+azure-data-tables>=12.5.0
+azure-identity>=1.16.0
+openai>=1.30.0              # AsyncAzureOpenAI — Whisper + GPT (Azure AI Foundry)
+
+# --- DOCX generation ---
+python-docx>=1.1.0

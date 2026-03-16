@@ -1,0 +1,2 @@
+# Development-only dependencies — do NOT install in production / Docker image
+debugpy>=1.8.0
