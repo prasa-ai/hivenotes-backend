@@ -1,12 +1,12 @@
 """
-audio.py — DEPRECATED.
+patient.py — DEPRECATED.
 
-All audio upload and job-polling functionality has moved to app/routers/sessions.py.
+Patient session upload functionality has moved to app/routers/sessions.py.
   Upload : POST /api/v1/sessions/upload
-  Status : GET  /api/v1/sessions/jobs/{job_id}
 
 This module is kept only to avoid import errors during the transition.
 """
 from fastapi import APIRouter
 
 router = APIRouter()
+

@@ -7,6 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from app.routers import audio
 from app.routers import sessions
+from app.routers import account
+from app.routers import auth
+from app.routers import patient
 from app.workflow.checkpointer import init_checkpointer, close_checkpointer
 from app.workflow.graph import compile_graph
 from app.config import settings
@@ -45,11 +48,12 @@ logger = logging.getLogger(__name__)
 _REQUIRED_SETTINGS = {
     "azure_storage_connection_string":         "AZURE_STORAGE_CONNECTION_STRING",
     "azure_table_connection_string":           "AZURE_TABLE_CONNECTION_STRING",
-    "azure_sessions_table_connection_string":  "AZURE_SESSIONS_TABLE_CONNECTION_STRING",
     "azure_openai_endpoint":                   "AZURE_OPENAI_ENDPOINT",
     "azure_openai_api_key":                    "AZURE_OPENAI_API_KEY",
     "azure_soap_endpoint":                     "AZURE_SOAP_ENDPOINT",
     "azure_soap_api_key":                      "AZURE_SOAP_API_KEY",
+    "cosmos_endpoint":                         "COSMOS_ENDPOINT",
+    "cosmos_key":                              "COSMOS_KEY",
 }
 
 
@@ -115,7 +119,8 @@ async def attach_session_context(request: Request, call_next):
 
 
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
-app.include_router(audio.router,    prefix="/api/v1", tags=["audio"])
+app.include_router(account.router,  prefix="/api/v1", tags=["account"])
+app.include_router(auth.router,     prefix="/api/v1", tags=["auth"])
 
 
 @app.get("/health", tags=["health"])
