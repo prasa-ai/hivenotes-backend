@@ -15,6 +15,7 @@ aiohttp>=3.9.0              # async HTTP — required by langgraph internals
 azure-core>=1.30.0          # azure.core.exceptions used directly across nodes
 azure-storage-blob>=12.19.0
 azure-data-tables>=12.5.0
+azure-cosmos>=4.7.0         # Cosmos DB NoSQL API (async client)
 azure-identity>=1.16.0
 openai>=1.30.0              # AsyncAzureOpenAI — Whisper + GPT (Azure AI Foundry)
 

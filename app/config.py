@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     # Future: overridden at runtime by rate-limiting logic (every 4th+ req/min → Whisper)
     use_whisper_transcription: bool = False
 
+    # OAuth / SSO settings (optional) — used to construct login URLs
+    azure_ad_client_id: str = ""
+    azure_ad_tenant_id: str = ""
+    azure_ad_redirect_uri: str = ""
+
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = ""
+
     # Notification placeholders (populate to enable)
     # Email — Azure Communication Services, SendGrid, or SMTP
     admin_email: str = "admin@testhivenotes.com"
@@ -48,6 +57,12 @@ class Settings(BaseSettings):
 
     # App
     max_upload_size_mb: int = 50
+
+    # Azure Cosmos DB (NoSQL) — sessions container
+    cosmos_endpoint: str = ""
+    cosmos_key: str = ""
+    cosmos_db_name: str = "hivenotes"
+    cosmos_sessions_container: str = "sessions"
 
     # LangGraph checkpointing — set to true to enable Azure Table Storage persistence
     enable_checkpoint: bool = False

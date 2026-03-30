@@ -1,3 +1,67 @@
+# Hivenotes Backend — Quick Start & Examples
+
+This project exposes a small FastAPI backend that supports:
+
+- Therapist registration (`/api/v1/account/register`)
+- SSO provider discovery (`/api/v1/auth/providers`) and callback stubs
+- Patient session upload including audio and metadata (`/api/v1/patient/session/upload`)
+
+## Prerequisites
+
+- Python 3.11+
+- Install runtime dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Run the app
+
+```bash
+python -m uvicorn main:app --reload --port {port_number}
+```
+
+## API examples
+
+1. Register a therapist
+
+```bash
+curl -sS -X POST http://localhost:8000/api/v1/account/register \
+  -H 'Content-Type: application/json' \
+  -d '{"first_name":"Jane","last_name":"Doe","practice_id":"practice1","email":"jane@example.com","location":"Seattle"}'
+```
+
+2. List available SSO providers (Entra / Google)
+
+```bash
+curl http://localhost:8000/api/v1/auth/providers
+```
+
+3. Upload a patient session (multipart form)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/patient/session/upload \
+  -F therapist_id=therap1 \
+  -F patient_first_name=John \
+  -F patient_last_name=Smith \
+  -F session_at=2026-03-29T10:00:00Z \
+  -F "file=@/path/to/audio.wav;type=audio/wav"
+```
+
+## Tests
+
+Install test dependencies and run pytest:
+
+```bash
+pip install pytest
+pytest -q
+```
+
+## Notes
+
+- The tests use mocks to avoid contacting Azure services; to run the server for real you must set the required Azure environment variables.
+- The `/api/v1/auth/{provider}/callback` endpoint is a stub — token exchange and session creation are not implemented yet.
+
 # HiveNotes Backend
 
 A FastAPI + LangGraph backend for SOAP notes generation that orchestrates audio transcription, note generation, and document creation using Azure AI services.
