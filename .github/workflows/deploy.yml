@@ -52,6 +52,10 @@ jobs:
             --body "{
               \"properties\": {
                 \"configuration\": {
+                  \"secrets\": [{
+                    \"name\": \"registry-password\",
+                    \"value\": \"${{ secrets.REGISTRY_PASSWORD }}\"
+                  }],
                   \"ingress\": {\"external\": true, \"targetPort\": 8000},
                   \"registries\": [{
                     \"server\": \"${{ secrets.REGISTRY_LOGIN_SERVER }}\",
