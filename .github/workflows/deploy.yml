@@ -39,8 +39,31 @@ jobs:
           docker push ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
 
       - name: Deploy to Azure Container App
-        uses: azure/container-apps-deploy-action@v1
-        with:
-          resourceGroup: ${{ env.RESOURCE_GROUP }}
-          containerAppName: ${{ env.CONTAINER_APP_NAME }}
-          imageToDeploy: ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        # Workaround for Azure CLI 2.85.0 bug: `az containerapp up/update` crashes
+        # when the existing app's template.containers is null in the ARM response
+        # (TypeError: 'NoneType' object is not iterable / has no len()).
+        # We bypass the broken CLI code path by PATCHing the ARM resource directly.
+        run: |
+          SUB=$(az account show --query id -o tsv)
+          IMAGE="${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          az rest --method PATCH \
+            --url "https://management.azure.com/subscriptions/${SUB}/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.App/containerApps/${{ env.CONTAINER_APP_NAME }}?api-version=2024-03-01" \
+            --headers "Content-Type=application/json" \
+            --body "{
+              \"properties\": {
+                \"configuration\": {
+                  \"ingress\": {\"external\": true, \"targetPort\": 8000},
+                  \"registries\": [{
+                    \"server\": \"${{ secrets.REGISTRY_LOGIN_SERVER }}\",
+                    \"username\": \"${{ secrets.REGISTRY_USERNAME }}\",
+                    \"passwordSecretRef\": \"registry-password\"
+                  }]
+                },
+                \"template\": {
+                  \"containers\": [{
+                    \"name\": \"${{ env.CONTAINER_APP_NAME }}\",
+                    \"image\": \"${IMAGE}\"
+                  }]
+                }
+              }
+            }"
