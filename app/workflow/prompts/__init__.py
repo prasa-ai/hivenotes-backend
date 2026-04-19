@@ -144,7 +144,7 @@ PROMPT_REGISTRY: dict[str, PromptSet] = _build_registry()
 
 # ── Public accessor ───────────────────────────────────────────────────────────
 
-def get_prompt_set(name: Optional[str] = None) -> PromptSet:
+def get_prompt_set(name: str | None = None) -> PromptSet:
     """
     Return the :class:`PromptSet` for *name*.
 

@@ -83,13 +83,55 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="SOAP Notes API",
+    title="HiveNotes API",
     description=(
-        "FastAPI + LangGraph backend that receives an audio file from the mobile app "
-        "and orchestrates transcription (Azure Whisper), SOAP note generation (GPT-4o), "
-        "DOCX creation, and Azure Blob Storage persistence."
+        "FastAPI + LangGraph backend for therapy session management and SOAP note generation.\n\n"
+        "## Modules\n"
+        "- **account** — Therapist registration and profile management. "
+        "Captures real-world identity (licence number, state, type) separately from "
+        "practice tenancy, which is managed via a mapping table.\n"
+        "- **auth** — SSO provider discovery (Entra / Google) and OAuth2 callback stubs.\n"
+        "- **sessions** — Upload audio recordings, trigger SOAP note generation, "
+        "and retrieve session records. Patient names are never stored — only a "
+        "SHA-256 hash derived from `therapist_id:first_name:last_name`.\n"
+        "- **health** — Liveness probe.\n\n"
+        "## Authentication\n"
+        "Use the **Authorize** button to set `X-User-Id` (dev) or a Bearer token (prod)."
     ),
-    version="0.3.0",
+    version="0.4.0",
+    openapi_tags=[
+        {
+            "name": "account",
+            "description": (
+                "Therapist registration and profile management. "
+                "Licence details (`license_number`, `license_state`, `license_type`) "
+                "are the source of truth for *who the therapist is* legally. "
+                "Practice membership is managed separately via a mapping table so a "
+                "therapist can work at multiple practices."
+            ),
+        },
+        {
+            "name": "auth",
+            "description": (
+                "SSO provider discovery and OAuth2 callback. Currently returns login "
+                "URLs for configured Entra and Google providers. "
+                "Token exchange is a stub — not yet implemented."
+            ),
+        },
+        {
+            "name": "sessions",
+            "description": (
+                "Therapy session lifecycle: upload audio, trigger SOAP note generation "
+                "via LangGraph, and retrieve session records. "
+                "Patient PII is never persisted — identity is derived from a "
+                "SHA-256 hash of `therapist_id:first_name:last_name`."
+            ),
+        },
+        {
+            "name": "health",
+            "description": "Liveness probe used by load balancers and container orchestrators.",
+        },
+    ],
     lifespan=lifespan,
 )
 

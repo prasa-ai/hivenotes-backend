@@ -1,6 +1,6 @@
 """Legacy audio models — kept for import compatibility. Prefer app.models.session."""
 from __future__ import annotations
-from typing import Optional
+ 
 from pydantic import BaseModel
 
 
@@ -19,6 +19,6 @@ class AudioUploadResponse(BaseModel):
 class JobStatusResponse(BaseModel):
     job_id: str
     status: str
-    step: Optional[str] = None
-    error: Optional[str] = None
-    docx_blob_path: Optional[str] = None
+    step: str | None = None
+    error: str | None = None
+    docx_blob_path: str | None = None
