@@ -19,53 +19,76 @@ Writes:  state["soap_text"]      — raw JSON string returned by the model
 """
 import json
 import logging
-from openai import AzureOpenAI
+import re
+from openai import AsyncAzureOpenAI
 from app.config import settings
+from app.workflow.prompts import get_prompt_set
 from app.workflow.state import GraphState
 
 logger = logging.getLogger(__name__)
 
-# ── System prompt ─────────────────────────────────────────────────────────────
-_SOAP_SYSTEM_PROMPT = """\
-You are an expert medical documentation assistant specialising in therapy \
-session notes. You will receive a cleaned transcript of a therapy session \
-between a therapist and a patient."""
+# ── Prompt loading ────────────────────────────────────────────────────────────
+# Resolved once at import time from SOAP_PROMPT_VERSION env var (default
+# "v2_clinical"). Override by setting the env var or calling
+# get_prompt_set(name) directly in evaluation / test code.
+_prompt_set = get_prompt_set()
+logger.info(
+    "generate_soap: using prompt version '%s' (output_format=%s) — %s",
+    _prompt_set.name, _prompt_set.output_format, _prompt_set.description,
+)
 
-_SOAP_USER_PROMPT = """\
-Your task is to produce a structured SOAP note in **valid JSON** using exactly \
-the following four keys and using this transcript recorded by therapist 
-{transcript_text}
+# Token budget: CoT variants need headroom for the reasoning block.
+_MAX_TOKENS = 4096 if _prompt_set.output_format == "xml_cot" else 2048
 
-  "subjective"  — The patient's own words: reported symptoms, feelings, \
-concerns, history, and relevant personal context as expressed during the session.
+# ── XML CoT extraction helpers ────────────────────────────────────────────────
+_SOAP_NOTES_RE = re.compile(
+    r"<soap-notes>\s*(.*?)\s*</soap-notes>",
+    re.DOTALL | re.IGNORECASE,
+)
+_REASONING_RE = re.compile(
+    r"<reasoning>\s*(.*?)\s*</reasoning>",
+    re.DOTALL | re.IGNORECASE,
+)
 
-  "objective"   — The clinician's factual observations: behaviour, affect, \
-speech, cognition, any reported measurements or test results, and observable \
-changes since the last session.
 
-  "assessment"  — The clinician's professional interpretation: diagnosis or \
-diagnostic impressions, risk assessment, progress against treatment goals, and \
-clinical reasoning.
+def _extract_cot_json(raw: str) -> tuple[str, str]:
+    """
+    Parse an ``xml_cot`` model response.
 
-  "plan"        — Concrete next steps: interventions agreed upon, medications, \
-homework tasks, referrals, next appointment, and any safety planning.
+    Returns ``(reasoning_text, soap_json_string)``.
+    Raises ``ValueError`` if the ``<soap-notes>`` block is absent.
+    """
+    reasoning_match = _REASONING_RE.search(raw)
+    reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
 
-Rules:
-- Return ONLY a JSON object with these four keys. No markdown fences, no \
-preamble, no commentary.
-- Write in clear, professional clinical language.
-- If a section cannot be determined from the transcript, set its value to \
-"Not documented in this session."
-- Do NOT invent clinical details not present in the transcript.
-"""
+    notes_match = _SOAP_NOTES_RE.search(raw)
+    if not notes_match:
+        raise ValueError(
+            "xml_cot response did not contain a <soap-notes> block. "
+            f"Raw response starts with: {raw[:200]!r}"
+        )
+    soap_json = notes_match.group(1).strip()
+    return reasoning, soap_json
 
 
 # ── Node ──────────────────────────────────────────────────────────────────────
 
-def generate_soap_node(state: GraphState) -> GraphState:
+async def generate_soap_node(state: GraphState) -> GraphState:
     """
     Call Azure OpenAI GPT to turn the cleaned transcript into a structured
     SOAP note, then validate and parse the JSON response.
+
+    Supports two output modes controlled by ``_prompt_set.output_format``:
+
+    ``json``
+        Direct JSON-object mode.  The model returns a JSON object and the
+        response is validated against the four required SOAP keys.
+
+    ``xml_cot``
+        Chain-of-thought mode (e.g. v3_fidelity_cot).  The model reasons
+        through the transcript in a ``<reasoning>`` block, then outputs the
+        SOAP JSON inside a ``<soap-notes>`` block.  The reasoning is logged
+        at DEBUG level and discarded; only the JSON is persisted.
     """
     transcript_text: str = state.get("transcript_text", "")
 
@@ -74,37 +97,61 @@ def generate_soap_node(state: GraphState) -> GraphState:
         logger.error(msg)
         return {**state, "error": msg}
 
+    is_cot = _prompt_set.output_format == "xml_cot"
+
     logger.info(
-        "generate_soap: sending %d-char transcript to GPT deployment '%s'  endpoint=%s",
+        "generate_soap: sending %d-char transcript to GPT deployment '%s'  "
+        "endpoint=%s  cot=%s",
         len(transcript_text),
         settings.azure_soap_deployment,
         settings.azure_soap_endpoint,
+        is_cot,
     )
 
-    client = AzureOpenAI(
+    client = AsyncAzureOpenAI(
         api_key=settings.azure_soap_api_key,
         azure_endpoint=settings.azure_soap_endpoint,
         api_version=settings.azure_soap_api_version,
     )
 
+    # CoT variants must NOT use json_object mode — the response contains XML tags and reasoning text, not just the JSON. 
+    # Non-CoT variants use json_object mode to enforce structured output.
+    create_kwargs: dict = dict(
+        model=settings.azure_soap_deployment,
+        messages=[
+            {"role": "system", "content": _prompt_set.system_prompt},
+            {"role": "user",   "content": _prompt_set.format_user(transcript_text)},
+        ],
+        temperature=0.2,
+        max_tokens=_MAX_TOKENS,
+    )
+    if not is_cot:
+        create_kwargs["response_format"] = {"type": "json_object"}
+
     try:
-        response = client.chat.completions.create(
-            model=settings.azure_soap_deployment,
-            messages=[
-                {"role": "system", "content": _SOAP_SYSTEM_PROMPT},
-                {"role": "user",   "content": _SOAP_USER_PROMPT.format(transcript_text=transcript_text)},
-            ],
-            temperature=0.2,       # low temperature for consistent clinical output
-            max_tokens=2048,
-            response_format={"type": "json_object"},   # force JSON mode
-        )
+        response = await client.chat.completions.create(**create_kwargs)
     except Exception as exc:
         msg = f"generate_soap: Azure OpenAI API error — {exc}"
         logger.error(msg)
         return {**state, "error": msg}
+    finally:
+        await client.close()
 
-    soap_text: str = response.choices[0].message.content.strip()
-    logger.info("generate_soap: received %d-char response", len(soap_text))
+    raw_response: str = response.choices[0].message.content.strip()
+    logger.info("generate_soap: received %d-char response", len(raw_response))
+
+    # ── Extract JSON from response ────────────────────────────────────────────
+    if is_cot:
+        try:
+            reasoning, soap_text = _extract_cot_json(raw_response)
+        except ValueError as exc:
+            msg = f"generate_soap: failed to extract <soap-notes> from CoT response — {exc}"
+            logger.error(msg)
+            return {**state, "error": msg}
+        if reasoning:
+            logger.debug("generate_soap: CoT reasoning:\n%s", reasoning)
+    else:
+        soap_text = raw_response
 
     # ── Validate the JSON structure ───────────────────────────────────────────
     required_keys = {"subjective", "objective", "assessment", "plan"}
