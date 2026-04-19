@@ -56,7 +56,8 @@ Fallback
 import base64
 import datetime
 import logging
-from typing import Any, AsyncIterator, Iterator, Optional, Sequence
+from typing import Any
+from collections.abc import AsyncIterator, Iterator, Sequence
 
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from azure.data.tables.aio import TableClient as AsyncTableClient
@@ -74,7 +75,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_checkpointer: Optional["AzureTableCheckpointer"] = None
+_checkpointer: "AzureTableCheckpointer" | None = None
 
 
 # ── Checkpointer class ────────────────────────────────────────────────────────
@@ -127,7 +128,7 @@ class AzureTableCheckpointer(BaseCheckpointSaver):
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     @staticmethod
-    def _config_values(config: RunnableConfig) -> tuple[str, str, Optional[str]]:
+    def _config_values(config: RunnableConfig) -> tuple[str, str, str | None]:
         conf = config.get("configurable", {})
         return (
             conf["thread_id"],
@@ -192,7 +193,7 @@ class AzureTableCheckpointer(BaseCheckpointSaver):
         )
 
         parent_cp_id: str = entity.get("parent_checkpoint_id", "")
-        parent_config: Optional[RunnableConfig] = (
+        parent_config: RunnableConfig | None = (
             {
                 "configurable": {
                     "thread_id": thread_id,
@@ -204,7 +205,7 @@ class AzureTableCheckpointer(BaseCheckpointSaver):
             else None
         )
 
-        pending_writes: Optional[list[tuple[str, str, Any]]] = None
+        pending_writes: list[tuple[str, str, Any]] | None = None
         if include_writes:
             wr_pk = self._wr_pk(thread_id, checkpoint_ns, cp_id)
             writes: list[tuple[str, str, Any]] = []
@@ -231,7 +232,7 @@ class AzureTableCheckpointer(BaseCheckpointSaver):
 
     # ── Async interface (used by graph.ainvoke) ───────────────────────────────
 
-    async def aget_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
+    async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
         thread_id, checkpoint_ns, checkpoint_id = self._config_values(config)
         cp_pk = self._cp_pk(thread_id)
 
@@ -245,7 +246,7 @@ class AzureTableCheckpointer(BaseCheckpointSaver):
                 return None
         else:
             # Find the most-recent checkpoint for this thread by timestamp
-            latest_entity: Optional[dict] = None
+            latest_entity: dict | None = None
             latest_ts = ""
             async for e in self._table.query_entities(
                 query_filter=f"PartitionKey eq '{cp_pk}'"
@@ -262,11 +263,11 @@ class AzureTableCheckpointer(BaseCheckpointSaver):
 
     async def alist(
         self,
-        config: Optional[RunnableConfig],
+        config: RunnableConfig | None,
         *,
-        filter: Optional[dict[str, Any]] = None,
-        before: Optional[RunnableConfig] = None,
-        limit: Optional[int] = None,
+        filter: dict[str, Any] | None = None,
+        before: RunnableConfig | None = None,
+        limit: int | None = None,
     ) -> AsyncIterator[CheckpointTuple]:
         if config is None:
             return
@@ -275,7 +276,7 @@ class AzureTableCheckpointer(BaseCheckpointSaver):
 
         # Collect all matching entities, then sort newest-first in Python.
         # Checkpoint history per workflow run is at most ~8 entries, so this is fine.
-        before_ts: Optional[str] = None
+        before_ts: str | None = None
         if before:
             _, _, before_cp_id = self._config_values(before)
             if before_cp_id:
@@ -365,7 +366,7 @@ class AzureTableCheckpointer(BaseCheckpointSaver):
 
     # ── Sync interface (required by BaseCheckpointSaver; not used with ainvoke) ─────
 
-    def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:  # type: ignore[override]
+    def get_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:  # type: ignore[override]
         raise NotImplementedError("AzureTableCheckpointer only supports async (use ainvoke).")
 
     def list(self, config, **kwargs) -> Iterator[CheckpointTuple]:  # type: ignore[override]
@@ -433,6 +434,6 @@ async def close_checkpointer() -> None:
     _checkpointer = None
 
 
-def get_checkpointer() -> Optional[BaseCheckpointSaver]:
+def get_checkpointer() -> BaseCheckpointSaver | None:
     """Return the active checkpointer instance (called by graph.py)."""
     return _checkpointer

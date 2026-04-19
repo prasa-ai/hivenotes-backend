@@ -28,7 +28,6 @@ import uuid
 from datetime import datetime, timezone
 
 import hashlib
-from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, status
 from azure.cosmos.aio import CosmosClient
@@ -83,8 +82,8 @@ async def _get_container():
 )
 async def list_sessions(
     therapist_id: str = Query(..., description="Therapist ID (partition key)"),
-    patient_first_name: Optional[str] = Query(None, description="Filter by patient first name"),
-    patient_last_name: Optional[str] = Query(None, description="Filter by patient last name"),
+    patient_first_name: str | None = Query(None, description="Filter by patient first name"),
+    patient_last_name: str | None = Query(None, description="Filter by patient last name"),
 ):
     """When patient_first_name and patient_last_name are both supplied the list is
     filtered to sessions belonging to that patient (identified by their hash).

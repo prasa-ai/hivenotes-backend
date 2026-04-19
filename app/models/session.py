@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -7,12 +7,12 @@ class SessionUpdate(BaseModel):
     """All fields optional — only provided fields are patched.
     Patient identity cannot be changed after creation.
     """
-    filename: Optional[str] = None
-    content_type: Optional[str] = None
-    audio_blob_path: Optional[str] = None
-    soap_blob_path: Optional[str] = None
-    transcript_blob_path: Optional[str] = None
-    session_at: Optional[str] = None
+    filename: str | None = None
+    content_type: str | None = None
+    audio_blob_path: str | None = None
+    soap_blob_path: str | None = None
+    transcript_blob_path: str | None = None
+    session_at: str | None = None
 
 
 # ── Cosmos DB document / response (no PII) ────────────────────────────────────
@@ -24,14 +24,14 @@ class SessionResponse(BaseModel):
     session_id: str
     therapist_id: str
     patient_id: str = Field(..., description="SHA-256(therapist_id:first_name:last_name) — no PII stored")
-    filename: Optional[str] = None
-    content_type: Optional[str] = None
-    audio_blob_path: Optional[str] = None
-    soap_blob_path: Optional[str] = None
-    transcript_blob_path: Optional[str] = None
-    session_at: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    filename: str | None = None
+    content_type: str | None = None
+    audio_blob_path: str | None = None
+    soap_blob_path: str | None = None
+    transcript_blob_path: str | None = None
+    session_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class SessionUploadResponse(SessionResponse):
@@ -45,6 +45,6 @@ class SessionUploadResponse(SessionResponse):
 class JobStatusResponse(BaseModel):
     job_id: str
     status: str          # queued | running | completed | failed
-    step: Optional[str] = None
-    error: Optional[str] = None
-    session_id: Optional[str] = None
+    step: str | None = None
+    error: str | None = None
+    session_id: str | None = None

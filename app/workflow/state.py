@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 
 class GraphState(TypedDict, total=False):
@@ -42,4 +42,4 @@ class GraphState(TypedDict, total=False):
     docx_blob_path: str            # e.g. "therapist1/client1/session1/soap_note.docx"
 
     # ── Error propagation ─────────────────────────────────────────────────────
-    error: Optional[str]
+    error: str | None

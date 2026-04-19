@@ -132,18 +132,30 @@ async def _fake_meta(therapist_id, patient_id, session_id, metadata):
 def test_account_register():
     account_mod.TableServiceClient = _DummyTableService
     client = TestClient(app)
+    # Required fields only (no initial_practice — that's optional)
     payload = {
-        "first_name": "Jane",
-        "last_name": "Doe",
-        "practice_id": "practice1",
-        "email": "jane@example.com",
-        "location": "Seattle",
-        "password": "secret123",
+        "first_name":     "Jane",
+        "last_name":      "Doe",
+        "email":          "jane@example.com",
+        "password":       "secret123",
+        "sex":            "Female",
+        "gender":         "Woman",
+        "date_of_birth":  "1985-06-15",
+        "license_number": "LIC-WA-12345",
+        "license_state":  "WA",
+        "license_type":   "LCSW",
     }
     r = client.post("/api/v1/therapist", json=payload)
     assert r.status_code == 201, r.text
     data = r.json()
     assert data["first_name"] == "Jane"
+    assert data["last_name"] == "Doe"
+    assert data["license_type"] == "LCSW"
+    assert data["license_state"] == "WA"
+    assert data["sex"] == "Female"
+    assert data["gender"] == "Woman"
+    assert data["date_of_birth"] == "1985-06-15"
+    assert "password" not in data, "password must never be returned in the response"
     assert "therapist_id" in data
 
 
