@@ -75,7 +75,6 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_checkpointer: "AzureTableCheckpointer" | None = None
 
 
 # ── Checkpointer class ────────────────────────────────────────────────────────
@@ -378,6 +377,8 @@ class AzureTableCheckpointer(BaseCheckpointSaver):
     def put_writes(self, config, writes, task_id) -> None:  # type: ignore[override]
         raise NotImplementedError("AzureTableCheckpointer only supports async (use ainvoke).")
 
+
+_checkpointer: AzureTableCheckpointer | None = None
 
 # ── Module-level lifecycle helpers called from FastAPI lifespan ───────────────
 

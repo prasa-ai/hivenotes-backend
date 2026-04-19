@@ -16,7 +16,7 @@ A FastAPI + LangGraph backend that receives audio recordings of therapy sessions
 
 ## Prerequisites
 
-- Python **3.14+**
+- Python **3.12+**
 - An Azure account with the services listed in [Environment Variables](#environment-variables) provisioned
 
 ---
@@ -207,7 +207,7 @@ Tests mock all Azure services, so no cloud credentials are needed:
 PYTHONPATH=. pytest -q
 ```
 
-To run under Python 3.14 specifically (using the included venv):
+To run under Python 3.12 specifically (using the included venv):
 
 ```bash
 source .venv314/bin/activate
