@@ -33,7 +33,7 @@ cd hivenotes-backend
 ### 2. Create a virtual environment
 
 ```bash
-python3.14 -m venv .venv
+python3.12 -m venv .venv
 
 # macOS / Linux
 source .venv/bin/activate
