@@ -192,95 +192,95 @@ async def update_session_by_patient(
 
 # ── GET ────────────────────────────────────────────────────────────────────────
 
-# @router.get(
-#     "/sessions/{session_id}",
-#     response_model=SessionResponse,
-#     summary="Get a session by ID (identity verified via patient name hash)",
-# )
-# async def get_session(
-#     session_id: str,
-#     therapist_id: str = Query(...),
-#     patient_first_name: str = Query(...),
-#     patient_last_name: str = Query(...),
-# ):
-#     expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-#     client, container = await _get_container()
-#     try:
-#         item = await container.read_item(item=session_id, partition_key=therapist_id)
-#     except cosmos_exc.CosmosResourceNotFoundError:
-#         raise HTTPException(status_code=404, detail="Session not found.")
-#     except cosmos_exc.CosmosHttpResponseError as exc:
-#         raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
-#     finally:
-#         await client.close()
-#     if item.get("patient_id") != expected:
-#         raise HTTPException(status_code=403, detail="Patient identity mismatch.")
-#     return SessionResponse(**item)
+@router.get(
+    "/sessions/{session_id}",
+    response_model=SessionResponse,
+    summary="Get a session by ID (identity verified via patient name hash)",
+)
+async def get_session(
+    session_id: str,
+    therapist_id: str = Query(...),
+    patient_first_name: str = Query(...),
+    patient_last_name: str = Query(...),
+):
+    expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
+    client, container = await _get_container()
+    try:
+        item = await container.read_item(item=session_id, partition_key=therapist_id)
+    except cosmos_exc.CosmosResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    except cosmos_exc.CosmosHttpResponseError as exc:
+        raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
+    finally:
+        await client.close()
+    if item.get("patient_id") != expected:
+        raise HTTPException(status_code=403, detail="Patient identity mismatch.")
+    return SessionResponse(**item)
 
 
 # ── UPDATE ─────────────────────────────────────────────────────────────────────
 
-# @router.put(
-#     "/sessions/{session_id}",
-#     response_model=SessionResponse,
-#     summary="Partial update of a session record",
-# )
-# async def update_session(
-#     session_id: str,
-#     payload: SessionUpdate,
-#     therapist_id: str = Query(...),
-#     patient_first_name: str = Query(...),
-#     patient_last_name: str = Query(...),
-# ):
-#     expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-#     client, container = await _get_container()
-#     try:
-#         item = await container.read_item(item=session_id, partition_key=therapist_id)
-#         if item.get("patient_id") != expected:
-#             raise HTTPException(status_code=403, detail="Patient identity mismatch.")
-#         updates = {k: v for k, v in payload.model_dump().items() if v is not None}
-#         updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-#         item.update(updates)
-#         await container.replace_item(item=session_id, body=item)
-#     except HTTPException:
-#         raise
-#     except cosmos_exc.CosmosResourceNotFoundError:
-#         raise HTTPException(status_code=404, detail="Session not found.")
-#     except cosmos_exc.CosmosHttpResponseError as exc:
-#         raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
-#     finally:
-#         await client.close()
-#     return SessionResponse(**item)
+@router.put(
+    "/sessions/{session_id}",
+    response_model=SessionResponse,
+    summary="Partial update of a session record",
+)
+async def update_session(
+    session_id: str,
+    payload: SessionUpdate,
+    therapist_id: str = Query(...),
+    patient_first_name: str = Query(...),
+    patient_last_name: str = Query(...),
+):
+    expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
+    client, container = await _get_container()
+    try:
+        item = await container.read_item(item=session_id, partition_key=therapist_id)
+        if item.get("patient_id") != expected:
+            raise HTTPException(status_code=403, detail="Patient identity mismatch.")
+        updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        item.update(updates)
+        await container.replace_item(item=session_id, body=item)
+    except HTTPException:
+        raise
+    except cosmos_exc.CosmosResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    except cosmos_exc.CosmosHttpResponseError as exc:
+        raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
+    finally:
+        await client.close()
+    return SessionResponse(**item)
 
 
 # ── DELETE ─────────────────────────────────────────────────────────────────────
 
-# @router.delete(
-#     "/sessions/{session_id}",
-#     status_code=status.HTTP_204_NO_CONTENT,
-#     summary="Delete a session record",
-# )
-# async def delete_session(
-#     session_id: str,
-#     therapist_id: str = Query(...),
-#     patient_first_name: str = Query(...),
-#     patient_last_name: str = Query(...),
-# ):
-#     expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-#     client, container = await _get_container()
-#     try:
-#         item = await container.read_item(item=session_id, partition_key=therapist_id)
-#         if item.get("patient_id") != expected:
-#             raise HTTPException(status_code=403, detail="Patient identity mismatch.")
-#         await container.delete_item(item=session_id, partition_key=therapist_id)
-#     except HTTPException:
-#         raise
-#     except cosmos_exc.CosmosResourceNotFoundError:
-#         raise HTTPException(status_code=404, detail="Session not found.")
-#     except cosmos_exc.CosmosHttpResponseError as exc:
-#         raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
-#     finally:
-#         await client.close()
+@router.delete(
+    "/sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a session record",
+)
+async def delete_session(
+    session_id: str,
+    therapist_id: str = Query(...),
+    patient_first_name: str = Query(...),
+    patient_last_name: str = Query(...),
+):
+    expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
+    client, container = await _get_container()
+    try:
+        item = await container.read_item(item=session_id, partition_key=therapist_id)
+        if item.get("patient_id") != expected:
+            raise HTTPException(status_code=403, detail="Patient identity mismatch.")
+        await container.delete_item(item=session_id, partition_key=therapist_id)
+    except HTTPException:
+        raise
+    except cosmos_exc.CosmosResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    except cosmos_exc.CosmosHttpResponseError as exc:
+        raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
+    finally:
+        await client.close()
 
 
 # ── CREATE SESSION (multipart: audio upload + patient info) ─────────────────
@@ -323,26 +323,30 @@ async def create_session(
     # Derive patient_id from hash — names are never written to storage (HIPAA)
     patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
 
-    # 1. Upload audio to Azure Blob
-    audio_blob_path = await upload_session_blob(
-        therapist_id=therapist_id,
-        patient_id=patient_id,
-        session_id=session_id,
-        filename=original_filename,
-        data=contents,
-        content_type=mime,
-    )
+    # 1. Upload audio to Azure Blob (skipped when ENABLE_BLOB_STORAGE=false)
+    if settings.enable_blob_storage:
+        audio_blob_path = await upload_session_blob(
+            therapist_id=therapist_id,
+            patient_id=patient_id,
+            session_id=session_id,
+            filename=original_filename,
+            data=contents,
+            content_type=mime,
+        )
+        # 2. Upload sidecar metadata blob (no patient PII)
+        await upload_session_metadata(therapist_id, patient_id, session_id, {
+            "therapist_id": therapist_id,
+            "patient_id": patient_id,
+            "session_at": session_at,
+            "original_filename": original_filename,
+            "audio_blob_path": audio_blob_path,
+        })
+        logger.info("create_session: audio uploaded to blob path %s", audio_blob_path)
+    else:
+        audio_blob_path = None
+        logger.info("create_session: blob storage disabled — skipping audio upload")
 
-    # 2. Upload sidecar metadata blob (no patient PII)
-    await upload_session_metadata(therapist_id, patient_id, session_id, {
-        "therapist_id": therapist_id,
-        "patient_id": patient_id,
-        "session_at": session_at,
-        "original_filename": original_filename,
-        "audio_blob_path": audio_blob_path,
-    })
-
-    # 3. Persist session record in Cosmos DB (no patient PII)
+    # 3. Persist session record in Cosmos DB (skipped when ENABLE_COSMOS_DB=false)
     now = datetime.now(timezone.utc).isoformat()
     record = {
         "id": session_id,
@@ -358,14 +362,18 @@ async def create_session(
         "created_at": now,
         "updated_at": now,
     }
-    client, container = await _get_container()
-    try:
-        await container.create_item(body=record)
-    except cosmos_exc.CosmosHttpResponseError as exc:
-        logger.error("upload: Cosmos error — %s", exc.message)
-        raise HTTPException(status_code=503, detail="Failed to persist session record.")
-    finally:
-        await client.close()
+    if settings.enable_cosmos_db:
+        client, container = await _get_container()
+        try:
+            await container.create_item(body=record)
+            logger.info("create_session: session record persisted in Cosmos DB")
+        except cosmos_exc.CosmosHttpResponseError as exc:
+            logger.error("upload: Cosmos error — %s", exc.message)
+            raise HTTPException(status_code=503, detail="Failed to persist session record.")
+        finally:
+            await client.close()
+    else:
+        logger.info("create_session: Cosmos DB disabled — skipping session record persistence")
 
     # 4. Enqueue LangGraph SOAP workflow
     job_id = str(uuid.uuid4())

@@ -55,6 +55,17 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_channel_id: str = ""
 
+    # SOAP prompt variant — must match a key in app/workflow/prompts/
+    # Available: v1_basic, v2_clinical  (add more by dropping a vN_*.py file)
+    soap_prompt_version: str = "v2_clinical"
+
+    # Feature toggles — set to false to bypass external services during local dev / LLM testing
+    # ENABLE_BLOB_STORAGE=false  → skip Azure Blob upload (audio + metadata sidecar)
+    # ENABLE_COSMOS_DB=false     → skip Cosmos DB write/read (session record persistence)
+    # LangGraph workflow always runs regardless of these flags.
+    enable_blob_storage: bool = False
+    enable_cosmos_db: bool = False
+
     # App
     max_upload_size_mb: int = 50
 
