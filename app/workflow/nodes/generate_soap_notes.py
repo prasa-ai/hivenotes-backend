@@ -122,7 +122,7 @@ async def generate_soap_node(state: GraphState) -> GraphState:
             {"role": "system", "content": _prompt_set.system_prompt},
             {"role": "user",   "content": _prompt_set.format_user(transcript_text)},
         ],
-        temperature=0.2,
+        temperature=0.3,
         max_tokens=_MAX_TOKENS,
     )
     if not is_cot:
