@@ -4,7 +4,7 @@ from enum import Enum
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
 from azure.data.tables.aio import TableServiceClient
-from azure.core.exceptions import HttpResponseError
+from azure.core.exceptions import HttpResponseError, ResourceNotFoundError, ResourceExistsError
 
 from app.config import settings
 
@@ -266,6 +266,11 @@ async def register_therapist(payload: TherapistCreate):
                 }
                 await table.upsert_entity(entity=mapping_entity)
 
+    except ResourceExistsError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A therapist with this email is already registered.",
+        )
     except HttpResponseError as exc:
         logger.error("register_therapist: Table Storage error — %s", exc.message)
         raise HTTPException(
@@ -321,6 +326,11 @@ async def get_therapist(therapist_id: str):
                 created_at=          e["created_at"],
                 updated_at=          e["updated_at"],
             )
+    except ResourceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Therapist '{therapist_id}' not found.",
+        )
     except HttpResponseError as exc:
         logger.error("get_therapist: Table Storage error — %s", exc.message)
         raise HTTPException(
@@ -374,6 +384,11 @@ async def update_therapist(therapist_id: str, payload: TherapistUpdate):
                 created_at=          entity["created_at"],
                 updated_at=          entity["updated_at"],
             )
+    except ResourceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Therapist '{therapist_id}' not found.",
+        )
     except HttpResponseError as exc:
         logger.error("update_therapist: Table Storage error — %s", exc.message)
         raise HTTPException(
@@ -398,6 +413,11 @@ async def delete_therapist(therapist_id: str):
         async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
             table = service.get_table_client(settings.azure_table_name)
             await table.delete_entity(partition_key=therapist_id, row_key=therapist_id)
+    except ResourceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Therapist '{therapist_id}' not found.",
+        )
     except HttpResponseError as exc:
         logger.error("delete_therapist: Table Storage error — %s", exc.message)
         raise HTTPException(
