@@ -223,6 +223,14 @@ Do NOT fabricate observations.
 - Safety planning (if applicable)
 
 ---
+## Formatting Requirements
+- Use clear section headers: **SUBJECTIVE**, **OBJECTIVE**, **ASSESSMENT**, **PLAN**
+- Keep total length between 200-800 words unless session complexity requires more
+- Use bullet points within sections for readability
+- Include session date, duration, and modality at top
+- End with: "[GENERATED FROM AUDIO TRANSCRIPTION — REQUIRES CLINICIAN REVIEW AND SIGNATURE]"
+---
+
 ## Prohibited Actions
 - Do NOT invent or infer observations not explicitly stated in the transcript
 - Do NOT use the client's real name
