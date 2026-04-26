@@ -1,11 +1,16 @@
 """
-Sessions router — Cosmos DB (NoSQL) CRUD for therapy session records.
+Sessions router — conditional backend CRUD for therapy session records.
 
-Document schema (Cosmos DB container: sessions, partition key: /therapist_id)
-─────────────────────────────────────────────────────────────────────────────
-  id                   : patient_id (SHA-256 hash — Cosmos DB document key)
-  therapist_id         : partition key
-  patient_id           : str  (same as id)
+Storage backend selection
+─────────────────────────
+When ``settings.enable_cosmos_db`` is True, session CRUD uses Cosmos DB.
+When False, the same endpoints transparently use Azure Table Storage.
+
+Shared document fields
+──────────────────────
+    session_id           : unique session id
+    therapist_id         : partition key / PartitionKey
+    patient_id           : SHA-256 hash (no patient names stored)
   filename             : str | None
   content_type         : str | None
   audio_blob_path      : str | None
@@ -23,21 +28,21 @@ Endpoints
   DELETE /sessions/{session_id}?therapist_id=&patient_first_name=&patient_last_name=   — delete
   GET    /sessions/jobs/{job_id}                       — poll SOAP workflow job status
 """
+import hashlib
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
-import hashlib
-
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, status
-from azure.cosmos.aio import CosmosClient
 from azure.cosmos import PartitionKey
 from azure.cosmos import exceptions as cosmos_exc
-
-import json
-from typing import Any
-from azure.storage.blob.aio import BlobServiceClient
+from azure.cosmos.aio import CosmosClient
+from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
+from azure.data.tables.aio import TableServiceClient
 from azure.storage.blob import ContentSettings
+from azure.storage.blob.aio import BlobServiceClient
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, status
 
 from app.config import settings
 from app.models.session import SessionResponse, SessionUpdate, JobStatusResponse, SessionUploadResponse
@@ -45,7 +50,51 @@ from app.models.session import SessionResponse, SessionUpdate, JobStatusResponse
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ── Blob Storage helpers ─────────────────────────────────────────────────────
+# Keep sessions isolated from therapist records in settings.azure_table_name.
+SESSIONS_TABLE_NAME = f"{settings.azure_table_name}-sessions"
+
+# ── In-memory SOAP job store ───────────────────────────────────────────────────
+_job_store: dict[str, dict] = {}
+
+ALLOWED_AUDIO_TYPES = {
+    "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav",
+    "audio/aac", "audio/ogg", "audio/webm", "audio/m4a", "audio/x-m4a",
+}
+
+
+# ── Patient-ID hashing (HIPAA: no PII stored in DB) ─────────────────────────
+
+def _hash_patient_id(therapist_id: str, first_name: str, last_name: str) -> str:
+    """Return SHA-256 hex digest of 'therapist_id:first_name_lower:last_name_lower'.
+    Deterministic — same inputs always produce the same patient_id.
+    """
+    raw = f"{therapist_id}:{first_name.strip().lower()}:{last_name.strip().lower()}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _normalize_optional(value: Any) -> Any:
+    if value == "":
+        return None
+    return value
+
+
+def _entity_to_session_response(entity: dict[str, Any]) -> SessionResponse:
+    return SessionResponse(
+        session_id=entity["session_id"],
+        therapist_id=entity["therapist_id"],
+        patient_id=entity["patient_id"],
+        filename=_normalize_optional(entity.get("filename")),
+        content_type=_normalize_optional(entity.get("content_type")),
+        audio_blob_path=_normalize_optional(entity.get("audio_blob_path")),
+        soap_blob_path=_normalize_optional(entity.get("soap_blob_path")),
+        transcript_blob_path=_normalize_optional(entity.get("transcript_blob_path")),
+        session_at=_normalize_optional(entity.get("session_at")),
+        created_at=_normalize_optional(entity.get("created_at")),
+        updated_at=_normalize_optional(entity.get("updated_at")),
+    )
+
+
+# ── Blob helpers ─────────────────────────────────────────────────────────────
 
 async def upload_session_blob(
     therapist_id: str,
@@ -55,10 +104,7 @@ async def upload_session_blob(
     data: bytes,
     content_type: str = "application/octet-stream",
 ) -> str:
-    """Upload a session file to Azure Blob Storage using a therapist/patient/session prefix.
-
-    Returns the blob path used within the container.
-    """
+    """Upload a session file to Azure Blob Storage using a therapist/patient/session prefix."""
     container_name = settings.azure_blob_container_name
     blob_path = f"{therapist_id}/{patient_id}/{session_id}/{filename}"
 
@@ -92,25 +138,6 @@ async def upload_session_metadata(
     return await upload_session_blob(therapist_id, patient_id, session_id, "metadata.json", data, "application/json")
 
 
-# ── In-memory SOAP job store ───────────────────────────────────────────────────
-_job_store: dict[str, dict] = {}
-
-ALLOWED_AUDIO_TYPES = {
-    "audio/mpeg", "audio/mp4", "audio/wav", "audio/x-wav",
-    "audio/aac", "audio/ogg", "audio/webm", "audio/m4a", "audio/x-m4a",
-}
-
-
-# ── Patient-ID hashing (HIPAA: no PII stored in DB) ─────────────────────────
-
-def _hash_patient_id(therapist_id: str, first_name: str, last_name: str) -> str:
-    """Return SHA-256 hex digest of 'therapist_id:first_name_lower:last_name_lower'.
-    Deterministic — same inputs always produce the same patient_id.
-    """
-    raw = f"{therapist_id}:{first_name.strip().lower()}:{last_name.strip().lower()}"
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
 # ── Cosmos DB helper ──────────────────────────────────────────────────────────
 
 async def _get_container():
@@ -122,6 +149,27 @@ async def _get_container():
         partition_key=PartitionKey(path="/therapist_id"),
     )
     return client, container
+
+
+# ── Azure Table helpers ──────────────────────────────────────────────────────
+
+async def _ensure_sessions_table(table) -> None:
+    try:
+        await table.create_table()
+    except Exception:
+        pass
+
+
+async def _query_sessions_table(table, filter_expression: str) -> list[dict[str, Any]]:
+    entities = table.query_entities(filter_expression)
+    return [e async for e in entities if e.get("entity_type") == "session"]
+
+
+async def _get_session_entity_table(table, therapist_id: str, session_id: str) -> dict[str, Any]:
+    try:
+        return await table.get_entity(partition_key=therapist_id, row_key=session_id)
+    except ResourceNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found.")
 
 
 # ── LIST ───────────────────────────────────────────────────────────────────────
@@ -139,27 +187,41 @@ async def list_sessions(
     """When patient_first_name and patient_last_name are both supplied the list is
     filtered to sessions belonging to that patient (identified by their hash).
     """
-    client, container = await _get_container()
+    if settings.enable_cosmos_db:
+        client, container = await _get_container()
+        try:
+            if patient_first_name and patient_last_name:
+                patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
+                items = container.query_items(
+                    query="SELECT * FROM c WHERE c.therapist_id = @tid AND c.patient_id = @pid",
+                    parameters=[{"name": "@tid", "value": therapist_id}, {"name": "@pid", "value": patient_id}],
+                    partition_key=therapist_id,
+                )
+            else:
+                items = container.query_items(
+                    query="SELECT * FROM c WHERE c.therapist_id = @tid",
+                    parameters=[{"name": "@tid", "value": therapist_id}],
+                    partition_key=therapist_id,
+                )
+            return [SessionResponse(**item) async for item in items]
+        except cosmos_exc.CosmosHttpResponseError as exc:
+            raise HTTPException(status_code=503, detail=f"Query failed: {exc.message}")
+        finally:
+            await client.close()
+
+    filter_expression = f"PartitionKey eq '{therapist_id}'"
+    if patient_first_name and patient_last_name:
+        patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
+        filter_expression += f" and patient_id eq '{patient_id}'"
+
     try:
-        if patient_first_name and patient_last_name:
-            patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-            items = container.query_items(
-                query="SELECT * FROM c WHERE c.therapist_id = @tid AND c.patient_id = @pid",
-                parameters=[{"name": "@tid", "value": therapist_id}, {"name": "@pid", "value": patient_id}],
-                partition_key=therapist_id,
-            )
-        else:
-            items = container.query_items(
-                query="SELECT * FROM c WHERE c.therapist_id = @tid",
-                parameters=[{"name": "@tid", "value": therapist_id}],
-                partition_key=therapist_id,
-            )
-        results = [SessionResponse(**item) async for item in items]
-    except cosmos_exc.CosmosHttpResponseError as exc:
+        async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
+            table = service.get_table_client(SESSIONS_TABLE_NAME)
+            await _ensure_sessions_table(table)
+            entities = await _query_sessions_table(table, filter_expression)
+            return [_entity_to_session_response(e) for e in entities]
+    except HttpResponseError as exc:
         raise HTTPException(status_code=503, detail=f"Query failed: {exc.message}")
-    finally:
-        await client.close()
-    return results
 
 
 # ── GET BY PATIENT IDENTITY ────────────────────────────────────────────────────
@@ -178,18 +240,31 @@ async def get_sessions_by_patient(
     Patient identity is derived server-side via SHA-256 — names are never stored.
     """
     patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-    client, container = await _get_container()
-    try:
-        items = container.query_items(
-            query="SELECT * FROM c WHERE c.therapist_id = @tid AND c.patient_id = @pid",
-            parameters=[{"name": "@tid", "value": therapist_id}, {"name": "@pid", "value": patient_id}],
-            partition_key=therapist_id,
-        )
-        results = [SessionResponse(**item) async for item in items]
-    except cosmos_exc.CosmosHttpResponseError as exc:
-        raise HTTPException(status_code=503, detail=f"Query failed: {exc.message}")
-    finally:
-        await client.close()
+
+    if settings.enable_cosmos_db:
+        client, container = await _get_container()
+        try:
+            items = container.query_items(
+                query="SELECT * FROM c WHERE c.therapist_id = @tid AND c.patient_id = @pid",
+                parameters=[{"name": "@tid", "value": therapist_id}, {"name": "@pid", "value": patient_id}],
+                partition_key=therapist_id,
+            )
+            results = [SessionResponse(**item) async for item in items]
+        except cosmos_exc.CosmosHttpResponseError as exc:
+            raise HTTPException(status_code=503, detail=f"Query failed: {exc.message}")
+        finally:
+            await client.close()
+    else:
+        filter_expression = f"PartitionKey eq '{therapist_id}' and patient_id eq '{patient_id}'"
+        try:
+            async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
+                table = service.get_table_client(SESSIONS_TABLE_NAME)
+                await _ensure_sessions_table(table)
+                entities = await _query_sessions_table(table, filter_expression)
+                results = [_entity_to_session_response(e) for e in entities]
+        except HttpResponseError as exc:
+            raise HTTPException(status_code=503, detail=f"Query failed: {exc.message}")
+
     if not results:
         raise HTTPException(status_code=404, detail="No sessions found for this patient.")
     return results
@@ -212,32 +287,54 @@ async def update_session_by_patient(
     applies a partial update. Patient identity is derived via SHA-256 — names are never stored.
     """
     patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-    client, container = await _get_container()
+
+    if settings.enable_cosmos_db:
+        client, container = await _get_container()
+        try:
+            items_iter = container.query_items(
+                query=(
+                    "SELECT * FROM c WHERE c.therapist_id = @tid AND c.patient_id = @pid"
+                    " ORDER BY c.created_at DESC OFFSET 0 LIMIT 1"
+                ),
+                parameters=[{"name": "@tid", "value": therapist_id}, {"name": "@pid", "value": patient_id}],
+                partition_key=therapist_id,
+            )
+            results = [item async for item in items_iter]
+            if not results:
+                raise HTTPException(status_code=404, detail="No sessions found for this patient.")
+            item = results[0]
+            updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+            updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+            item.update(updates)
+            await container.replace_item(item=item["id"], body=item)
+            return SessionResponse(**item)
+        except HTTPException:
+            raise
+        except cosmos_exc.CosmosHttpResponseError as exc:
+            raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
+        finally:
+            await client.close()
+
+    filter_expression = f"PartitionKey eq '{therapist_id}' and patient_id eq '{patient_id}'"
     try:
-        # Query all sessions for this patient, ordered by created_at desc
-        items_iter = container.query_items(
-            query=(
-                "SELECT * FROM c WHERE c.therapist_id = @tid AND c.patient_id = @pid"
-                " ORDER BY c.created_at DESC OFFSET 0 LIMIT 1"
-            ),
-            parameters=[{"name": "@tid", "value": therapist_id}, {"name": "@pid", "value": patient_id}],
-            partition_key=therapist_id,
-        )
-        results = [item async for item in items_iter]
-        if not results:
-            raise HTTPException(status_code=404, detail="No sessions found for this patient.")
-        item = results[0]
-        updates = {k: v for k, v in payload.model_dump().items() if v is not None}
-        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-        item.update(updates)
-        await container.replace_item(item=item["id"], body=item)
+        async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
+            table = service.get_table_client(SESSIONS_TABLE_NAME)
+            await _ensure_sessions_table(table)
+            matches = await _query_sessions_table(table, filter_expression)
+            if not matches:
+                raise HTTPException(status_code=404, detail="No sessions found for this patient.")
+
+            item = sorted(matches, key=lambda e: e.get("created_at", ""), reverse=True)[0]
+            updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+            item.update(updates)
+            item["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            await table.update_entity(mode="merge", entity=item)
+            return _entity_to_session_response(item)
     except HTTPException:
         raise
-    except cosmos_exc.CosmosHttpResponseError as exc:
-        raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
-    finally:
-        await client.close()
-    return SessionResponse(**item)
+    except HttpResponseError as exc:
+        raise HTTPException(status_code=503, detail=f"Table error: {exc.message}")
 
 
 # ── GET ────────────────────────────────────────────────────────────────────────
@@ -254,18 +351,35 @@ async def get_session(
     patient_last_name: str = Query(...),
 ):
     expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-    client, container = await _get_container()
-    try:
-        item = await container.read_item(item=session_id, partition_key=therapist_id)
-    except cosmos_exc.CosmosResourceNotFoundError:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    except cosmos_exc.CosmosHttpResponseError as exc:
-        raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
-    finally:
-        await client.close()
+
+    if settings.enable_cosmos_db:
+        client, container = await _get_container()
+        try:
+            item = await container.read_item(item=session_id, partition_key=therapist_id)
+        except cosmos_exc.CosmosResourceNotFoundError:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        except cosmos_exc.CosmosHttpResponseError as exc:
+            raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
+        finally:
+            await client.close()
+    else:
+        try:
+            async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
+                table = service.get_table_client(SESSIONS_TABLE_NAME)
+                await _ensure_sessions_table(table)
+                item = await _get_session_entity_table(table, therapist_id, session_id)
+        except HTTPException:
+            raise
+        except HttpResponseError as exc:
+            raise HTTPException(status_code=503, detail=f"Table error: {exc.message}")
+        if item.get("entity_type") != "session":
+            raise HTTPException(status_code=404, detail="Session not found.")
+
     if item.get("patient_id") != expected:
         raise HTTPException(status_code=403, detail="Patient identity mismatch.")
-    return SessionResponse(**item)
+    if settings.enable_cosmos_db:
+        return SessionResponse(**item)
+    return _entity_to_session_response(item)
 
 
 # ── UPDATE ─────────────────────────────────────────────────────────────────────
@@ -283,24 +397,47 @@ async def update_session(
     patient_last_name: str = Query(...),
 ):
     expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-    client, container = await _get_container()
+
+    if settings.enable_cosmos_db:
+        client, container = await _get_container()
+        try:
+            item = await container.read_item(item=session_id, partition_key=therapist_id)
+            if item.get("patient_id") != expected:
+                raise HTTPException(status_code=403, detail="Patient identity mismatch.")
+            updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+            updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+            item.update(updates)
+            await container.replace_item(item=session_id, body=item)
+            return SessionResponse(**item)
+        except HTTPException:
+            raise
+        except cosmos_exc.CosmosResourceNotFoundError:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        except cosmos_exc.CosmosHttpResponseError as exc:
+            raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
+        finally:
+            await client.close()
+
     try:
-        item = await container.read_item(item=session_id, partition_key=therapist_id)
-        if item.get("patient_id") != expected:
-            raise HTTPException(status_code=403, detail="Patient identity mismatch.")
-        updates = {k: v for k, v in payload.model_dump().items() if v is not None}
-        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-        item.update(updates)
-        await container.replace_item(item=session_id, body=item)
+        async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
+            table = service.get_table_client(SESSIONS_TABLE_NAME)
+            await _ensure_sessions_table(table)
+            item = await _get_session_entity_table(table, therapist_id, session_id)
+            if item.get("entity_type") != "session":
+                raise HTTPException(status_code=404, detail="Session not found.")
+            if item.get("patient_id") != expected:
+                raise HTTPException(status_code=403, detail="Patient identity mismatch.")
+
+            updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+            item.update(updates)
+            item["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            await table.update_entity(mode="merge", entity=item)
+            return _entity_to_session_response(item)
     except HTTPException:
         raise
-    except cosmos_exc.CosmosResourceNotFoundError:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    except cosmos_exc.CosmosHttpResponseError as exc:
-        raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
-    finally:
-        await client.close()
-    return SessionResponse(**item)
+    except HttpResponseError as exc:
+        raise HTTPException(status_code=503, detail=f"Table error: {exc.message}")
 
 
 # ── DELETE ─────────────────────────────────────────────────────────────────────
@@ -317,20 +454,39 @@ async def delete_session(
     patient_last_name: str = Query(...),
 ):
     expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-    client, container = await _get_container()
+
+    if settings.enable_cosmos_db:
+        client, container = await _get_container()
+        try:
+            item = await container.read_item(item=session_id, partition_key=therapist_id)
+            if item.get("patient_id") != expected:
+                raise HTTPException(status_code=403, detail="Patient identity mismatch.")
+            await container.delete_item(item=session_id, partition_key=therapist_id)
+            return
+        except HTTPException:
+            raise
+        except cosmos_exc.CosmosResourceNotFoundError:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        except cosmos_exc.CosmosHttpResponseError as exc:
+            raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
+        finally:
+            await client.close()
+
     try:
-        item = await container.read_item(item=session_id, partition_key=therapist_id)
-        if item.get("patient_id") != expected:
-            raise HTTPException(status_code=403, detail="Patient identity mismatch.")
-        await container.delete_item(item=session_id, partition_key=therapist_id)
+        async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
+            table = service.get_table_client(SESSIONS_TABLE_NAME)
+            await _ensure_sessions_table(table)
+            item = await _get_session_entity_table(table, therapist_id, session_id)
+            if item.get("entity_type") != "session":
+                raise HTTPException(status_code=404, detail="Session not found.")
+            if item.get("patient_id") != expected:
+                raise HTTPException(status_code=403, detail="Patient identity mismatch.")
+
+            await table.delete_entity(partition_key=therapist_id, row_key=session_id)
     except HTTPException:
         raise
-    except cosmos_exc.CosmosResourceNotFoundError:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    except cosmos_exc.CosmosHttpResponseError as exc:
-        raise HTTPException(status_code=503, detail=f"Cosmos error: {exc.message}")
-    finally:
-        await client.close()
+    except HttpResponseError as exc:
+        raise HTTPException(status_code=503, detail=f"Table error: {exc.message}")
 
 
 # ── CREATE SESSION (multipart: audio upload + patient info) ─────────────────
@@ -396,9 +552,9 @@ async def create_session(
         audio_blob_path = None
         logger.info("create_session: blob storage disabled — skipping audio upload")
 
-    # 3. Persist session record in Cosmos DB (skipped when ENABLE_COSMOS_DB=false)
+    # 3. Persist session record in configured backend
     now = datetime.now(timezone.utc).isoformat()
-    record = {
+    cosmos_record = {
         "id": session_id,
         "session_id": session_id,
         "therapist_id": therapist_id,
@@ -412,10 +568,11 @@ async def create_session(
         "created_at": now,
         "updated_at": now,
     }
+
     if settings.enable_cosmos_db:
         client, container = await _get_container()
         try:
-            await container.create_item(body=record)
+            await container.create_item(body=cosmos_record)
             logger.info("create_session: session record persisted in Cosmos DB")
         except cosmos_exc.CosmosHttpResponseError as exc:
             logger.error("upload: Cosmos error — %s", exc.message)
@@ -423,7 +580,31 @@ async def create_session(
         finally:
             await client.close()
     else:
-        logger.info("create_session: Cosmos DB disabled — skipping session record persistence")
+        table_record = {
+            "PartitionKey": therapist_id,
+            "RowKey": session_id,
+            "entity_type": "session",
+            "session_id": session_id,
+            "therapist_id": therapist_id,
+            "patient_id": patient_id,
+            "filename": original_filename,
+            "content_type": mime,
+            "audio_blob_path": audio_blob_path or "",
+            "soap_blob_path": "",
+            "transcript_blob_path": "",
+            "session_at": session_at,
+            "created_at": now,
+            "updated_at": now,
+        }
+        try:
+            async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
+                table = service.get_table_client(SESSIONS_TABLE_NAME)
+                await _ensure_sessions_table(table)
+                await table.upsert_entity(entity=table_record)
+                logger.info("create_session: session record persisted in Azure Table Storage")
+        except HttpResponseError as exc:
+            logger.error("create_session: Table error — %s", exc.message)
+            raise HTTPException(status_code=503, detail="Failed to persist session record.")
 
     # 4. Enqueue LangGraph SOAP workflow
     job_id = str(uuid.uuid4())

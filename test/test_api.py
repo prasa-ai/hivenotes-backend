@@ -35,7 +35,7 @@ _graph.compile_graph = _noop_compile
 # ── Now import app ────────────────────────────────────────────────────────────
 from fastapi.testclient import TestClient
 
-import app.routers.account as account_mod
+import app.routers.therapist as account_mod
 import app.routers.sessions as sessions_mod
 from main import app
 
