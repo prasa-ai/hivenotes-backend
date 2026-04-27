@@ -5,9 +5,8 @@ import logging.config
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from app.routers import audio
 from app.routers import sessions
-from app.routers import account
+from app.routers import therapist
 from app.routers import auth
 from app.routers import patient
 from app.workflow.checkpointer import init_checkpointer, close_checkpointer
@@ -161,7 +160,7 @@ async def attach_session_context(request: Request, call_next):
 
 
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
-app.include_router(account.router,  prefix="/api/v1", tags=["account"])
+app.include_router(therapist.router,  prefix="/api/v1", tags=["account"])
 app.include_router(auth.router,     prefix="/api/v1", tags=["auth"])
 
 

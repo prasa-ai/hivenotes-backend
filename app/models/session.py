@@ -32,6 +32,7 @@ class SessionResponse(BaseModel):
     session_at: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    docx_content_base64: str | None = Field(default=None, description="Base64-encoded DOCX file content (only populated when include_docx=true)")
 
 
 class SessionUploadResponse(SessionResponse):

@@ -1,7 +1,7 @@
 import logging
 from datetime import date, datetime, timezone
 from enum import Enum
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from azure.data.tables.aio import TableServiceClient
 from azure.core.exceptions import HttpResponseError, ResourceNotFoundError, ResourceExistsError
@@ -434,16 +434,68 @@ async def delete_therapist(therapist_id: str):
 @router.get(
     "/therapists",
     response_model=list[TherapistResponse],
-    summary="List therapists in a practice",
+    summary="List therapists (admin can list all)",
 )
-async def list_therapists(practice_id: str):
-    """List all therapists associated with a given practice_id."""
+async def list_therapists(
+    request: Request,
+    therapist_id: str | None = Query(None, description="Optional therapist ID (email). If omitted, admin can list all therapists."),
+):
+    """List therapists by therapist_id or list all therapists for admin users.
+
+    - If therapist_id is provided, returns that single therapist (as a 1-item list).
+    - If therapist_id is omitted, only admin users can list all therapists.
+    """
+    user_id = (getattr(request.state, "user_id", None) or "").strip().lower()
+    
+    if not therapist_id and not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either therapist_id or x-user-id must be provided.",
+        )
+    
     try:
         async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
             table = service.get_table_client(settings.azure_table_name)
-            entities = table.query_entities(f"PartitionKey eq '{practice_id}'")
+
             therapists = []
+
+            if therapist_id:
+                tid = therapist_id.lower()
+                e = await table.get_entity(partition_key=tid, row_key=tid)
+                therapists.append(TherapistResponse(
+                    therapist_id= e.get("RowKey", ""),
+                    first_name=   e["first_name"],
+                    last_name=    e["last_name"],
+                    email=        e["email"],
+                    sex=           BiologicalSex(e["sex"]),
+                    gender=        GenderIdentity(e["gender"]),
+                    date_of_birth= e["date_of_birth"],
+                    license_number=      e["license_number"],
+                    license_state=       e["license_state"],
+                    license_type=        LicenseType(e["license_type"]),
+                    npi_number=          e.get("npi_number") or None,
+                    years_of_experience= int(e["years_of_experience"]) if e.get("years_of_experience") else None,
+                    specialization=      e.get("specialization") or None,
+                    profile_picture_url= e.get("profile_picture_url") or None,
+                    created_at=          e["created_at"],
+                    updated_at=          e["updated_at"],
+                ))
+                return therapists
+
+            if user_id != "admin":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only admin can list all therapists.",
+                )
+
+            entities = table.list_entities()
             async for e in entities:
+                # Skip non-therapist rows (e.g., mapping rows) kept in the same table.
+                if e.get("PartitionKey") != e.get("RowKey"):
+                    continue
+                if "license_number" not in e or "license_type" not in e:
+                    continue
+
                 therapists.append(TherapistResponse(
                     therapist_id= e.get("RowKey", ""),
                     first_name=   e["first_name"],
@@ -463,6 +515,11 @@ async def list_therapists(practice_id: str):
                     updated_at=          e["updated_at"],
                 ))
             return therapists
+    except ResourceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Therapist '{therapist_id}' not found.",
+        )
     except HttpResponseError as exc:
         logger.error("list_therapists: Table Storage error — %s", exc.message)
         raise HTTPException(
