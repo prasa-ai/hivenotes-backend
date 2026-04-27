@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 import uuid
+import base64
 from datetime import datetime, timezone
 from typing import Any
 
@@ -42,7 +43,7 @@ from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
 from azure.data.tables.aio import TableServiceClient
 from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import BlobServiceClient
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile, status
 
 from app.config import settings
 from app.models.session import SessionResponse, SessionUpdate, JobStatusResponse, SessionUploadResponse
@@ -172,54 +173,141 @@ async def _get_session_entity_table(table, therapist_id: str, session_id: str) -
         raise HTTPException(status_code=404, detail="Session not found.")
 
 
+async def _download_docx_from_blob(docx_blob_path: str) -> str | None:
+    """Download DOCX from blob storage and return as base64-encoded string.
+    Returns None if the blob path is not set or download fails.
+    """
+    if not docx_blob_path:
+        return None
+    
+    try:
+        async with BlobServiceClient.from_connection_string(settings.azure_storage_connection_string) as service:
+            container_client = service.get_container_client(settings.azure_blob_container_name)
+            blob_client = container_client.get_blob_client(docx_blob_path)
+            docx_bytes = await blob_client.download_blob()
+            content = await docx_bytes.readall()
+            return base64.b64encode(content).decode("utf-8")
+    except Exception as exc:
+        logger.warning("_download_docx_from_blob: failed to download %s — %s", docx_blob_path, str(exc))
+        return None
+
+
 # ── LIST ───────────────────────────────────────────────────────────────────────
 
 @router.get(
     "/sessions",
     response_model=list[SessionResponse],
-    summary="List sessions for a therapist, optionally filtered to a patient",
+    summary="List sessions for a therapist or all sessions (admin)",
 )
 async def list_sessions(
-    therapist_id: str = Query(..., description="Therapist ID (partition key)"),
+    request: Request,
+    therapist_id: str | None = Query(None, description="Therapist ID (partition key). If omitted, admin can list all sessions."),
     patient_first_name: str | None = Query(None, description="Filter by patient first name"),
     patient_last_name: str | None = Query(None, description="Filter by patient last name"),
+    include_docx: bool = Query(False, description="If true, download and include DOCX content as base64 for each session"),
 ):
-    """When patient_first_name and patient_last_name are both supplied the list is
-    filtered to sessions belonging to that patient (identified by their hash).
+    """When therapist_id is provided, returns sessions for that therapist.
+    When therapist_id is omitted, only admin users can list all sessions across all therapists.
     """
+    user_id = (getattr(request.state, "user_id", None) or "").strip().lower()
+    
+    if not therapist_id and not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either therapist_id or x-user-id must be provided.",
+        )
+    
     if settings.enable_cosmos_db:
         client, container = await _get_container()
         try:
-            if patient_first_name and patient_last_name:
-                patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-                items = container.query_items(
-                    query="SELECT * FROM c WHERE c.therapist_id = @tid AND c.patient_id = @pid",
-                    parameters=[{"name": "@tid", "value": therapist_id}, {"name": "@pid", "value": patient_id}],
-                    partition_key=therapist_id,
-                )
+            if therapist_id:
+                if patient_first_name and patient_last_name:
+                    patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
+                    items = container.query_items(
+                        query="SELECT * FROM c WHERE c.therapist_id = @tid AND c.patient_id = @pid",
+                        parameters=[{"name": "@tid", "value": therapist_id}, {"name": "@pid", "value": patient_id}],
+                        partition_key=therapist_id,
+                    )
+                else:
+                    items = container.query_items(
+                        query="SELECT * FROM c WHERE c.therapist_id = @tid",
+                        parameters=[{"name": "@tid", "value": therapist_id}],
+                        partition_key=therapist_id,
+                    )
+                results = []
+                async for item in items:
+                    docx_content_base64 = None
+                    if include_docx:
+                        docx_content_base64 = await _download_docx_from_blob(item.get("soap_blob_path"))
+                    results.append(SessionResponse(**item, docx_content_base64=docx_content_base64))
+                return results
             else:
-                items = container.query_items(
-                    query="SELECT * FROM c WHERE c.therapist_id = @tid",
-                    parameters=[{"name": "@tid", "value": therapist_id}],
-                    partition_key=therapist_id,
-                )
-            return [SessionResponse(**item) async for item in items]
+                # therapist_id is None; only admin can list all
+                if user_id != "admin":
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Only admin can list all sessions.",
+                    )
+                # Return all sessions across all therapists
+                items = container.query_items(query="SELECT * FROM c")
+                results = []
+                async for item in items:
+                    docx_content_base64 = None
+                    if include_docx:
+                        docx_content_base64 = await _download_docx_from_blob(item.get("soap_blob_path"))
+                    results.append(SessionResponse(**item, docx_content_base64=docx_content_base64))
+                return results
+        except HTTPException:
+            raise
         except cosmos_exc.CosmosHttpResponseError as exc:
             raise HTTPException(status_code=503, detail=f"Query failed: {exc.message}")
         finally:
             await client.close()
 
-    filter_expression = f"PartitionKey eq '{therapist_id}'"
-    if patient_first_name and patient_last_name:
-        patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
-        filter_expression += f" and patient_id eq '{patient_id}'"
-
+    # Table Storage path
     try:
         async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
             table = service.get_table_client(SESSIONS_TABLE_NAME)
             await _ensure_sessions_table(table)
-            entities = await _query_sessions_table(table, filter_expression)
-            return [_entity_to_session_response(e) for e in entities]
+            
+            if therapist_id:
+                filter_expression = f"PartitionKey eq '{therapist_id}'"
+                if patient_first_name and patient_last_name:
+                    patient_id = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
+                    filter_expression += f" and patient_id eq '{patient_id}'"
+                entities = await _query_sessions_table(table, filter_expression)
+                results = []
+                for e in entities:
+                    docx_content_base64 = None
+                    if include_docx:
+                        docx_content_base64 = await _download_docx_from_blob(e.get("soap_blob_path"))
+                    response = _entity_to_session_response(e)
+                    if docx_content_base64:
+                        response.docx_content_base64 = docx_content_base64
+                    results.append(response)
+                return results
+            else:
+                # therapist_id is None; only admin can list all
+                if user_id != "admin":
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Only admin can list all sessions.",
+                    )
+                # Return all sessions from the table
+                filter_expression = "entity_type eq 'session'"
+                entities = await _query_sessions_table(table, filter_expression)
+                results = []
+                for e in entities:
+                    docx_content_base64 = None
+                    if include_docx:
+                        docx_content_base64 = await _download_docx_from_blob(e.get("soap_blob_path"))
+                    response = _entity_to_session_response(e)
+                    if docx_content_base64:
+                        response.docx_content_base64 = docx_content_base64
+                    results.append(response)
+                return results
+    except HTTPException:
+        raise
     except HttpResponseError as exc:
         raise HTTPException(status_code=503, detail=f"Query failed: {exc.message}")
 
@@ -235,6 +323,7 @@ async def get_sessions_by_patient(
     therapist_id: str = Query(...),
     patient_first_name: str = Query(...),
     patient_last_name: str = Query(...),
+    include_docx: bool = Query(False, description="If true, download and include DOCX content as base64 for each session"),
 ):
     """Returns all session records belonging to the given therapist + patient combination.
     Patient identity is derived server-side via SHA-256 — names are never stored.
@@ -249,7 +338,12 @@ async def get_sessions_by_patient(
                 parameters=[{"name": "@tid", "value": therapist_id}, {"name": "@pid", "value": patient_id}],
                 partition_key=therapist_id,
             )
-            results = [SessionResponse(**item) async for item in items]
+            results = []
+            async for item in items:
+                docx_content_base64 = None
+                if include_docx:
+                    docx_content_base64 = await _download_docx_from_blob(item.get("soap_blob_path"))
+                results.append(SessionResponse(**item, docx_content_base64=docx_content_base64))
         except cosmos_exc.CosmosHttpResponseError as exc:
             raise HTTPException(status_code=503, detail=f"Query failed: {exc.message}")
         finally:
@@ -261,7 +355,16 @@ async def get_sessions_by_patient(
                 table = service.get_table_client(SESSIONS_TABLE_NAME)
                 await _ensure_sessions_table(table)
                 entities = await _query_sessions_table(table, filter_expression)
-                results = [_entity_to_session_response(e) for e in entities]
+                results = []
+                for e in entities:
+                    docx_content_base64 = None
+                    if include_docx:
+                        docx_content_base64 = await _download_docx_from_blob(e.get("soap_blob_path"))
+                    response = _entity_to_session_response(e)
+                    # Add DOCX content to response
+                    if docx_content_base64:
+                        response.docx_content_base64 = docx_content_base64
+                    results.append(response)
         except HttpResponseError as exc:
             raise HTTPException(status_code=503, detail=f"Query failed: {exc.message}")
 
@@ -349,6 +452,7 @@ async def get_session(
     therapist_id: str = Query(...),
     patient_first_name: str = Query(...),
     patient_last_name: str = Query(...),
+    include_docx: bool = Query(False, description="If true, download and include DOCX content as base64"),
 ):
     expected = _hash_patient_id(therapist_id, patient_first_name, patient_last_name)
 
@@ -377,9 +481,33 @@ async def get_session(
 
     if item.get("patient_id") != expected:
         raise HTTPException(status_code=403, detail="Patient identity mismatch.")
+    
+    # Fetch DOCX if requested
+    docx_content_base64 = None
+    if include_docx:
+        docx_blob_path = item.get("soap_blob_path")
+        docx_content_base64 = await _download_docx_from_blob(docx_blob_path)
+    
     if settings.enable_cosmos_db:
-        return SessionResponse(**item)
-    return _entity_to_session_response(item)
+        return SessionResponse(
+            **item,
+            docx_content_base64=docx_content_base64,
+        )
+    # For Table Storage, build response without internal Azure fields
+    return SessionResponse(
+        session_id=item.get("session_id", ""),
+        therapist_id=item.get("therapist_id", ""),
+        patient_id=item.get("patient_id", ""),
+        filename=_normalize_optional(item.get("filename")),
+        content_type=_normalize_optional(item.get("content_type")),
+        audio_blob_path=_normalize_optional(item.get("audio_blob_path")),
+        soap_blob_path=_normalize_optional(item.get("soap_blob_path")),
+        transcript_blob_path=_normalize_optional(item.get("transcript_blob_path")),
+        session_at=_normalize_optional(item.get("session_at")),
+        created_at=_normalize_optional(item.get("created_at")),
+        updated_at=_normalize_optional(item.get("updated_at")),
+        docx_content_base64=docx_content_base64,
+    )
 
 
 # ── UPDATE ─────────────────────────────────────────────────────────────────────
