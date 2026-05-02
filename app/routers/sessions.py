@@ -58,8 +58,8 @@ from app.models.session import SessionResponse, SessionUpdate, JobStatusResponse
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Keep sessions isolated from therapist records in settings.azure_table_name.
-SESSIONS_TABLE_NAME = f"{settings.azure_table_name}-sessions"
+
+SESSIONS_TABLE_NAME = "sessions"
 
 # ── In-memory SOAP job store ───────────────────────────────────────────────────
 _job_store: dict[str, dict] = {}
