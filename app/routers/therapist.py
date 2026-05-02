@@ -313,6 +313,12 @@ async def register_therapist(payload: TherapistCreate):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Failed to persist therapist. Please try again.",
         )
+    except Exception as exc:
+        logger.error("register_therapist: Unexpected error — %s", str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred. Please try again.",
+        )
 
     return TherapistResponse(
         id=                    entity["id"],
