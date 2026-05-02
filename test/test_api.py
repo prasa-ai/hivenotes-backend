@@ -184,7 +184,7 @@ def test_session_create():
     assert r.status_code == 201, r.text
     j = r.json()
     assert j["therapist_id"] == _T_ID
-    assert j["patient_id"] == _P_HASH, "patient_id must be SHA-256 hash of therapist:first:last"
+    assert j["patient_id"] == _P_HASH, "auto-derived patient_id must match expected hash"
     assert "patient_first_name" not in j
     assert "patient_last_name" not in j
     assert "session_id" in j

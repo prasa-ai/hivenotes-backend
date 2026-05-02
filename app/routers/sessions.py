@@ -6,11 +6,18 @@ Storage backend selection
 When ``settings.enable_cosmos_db`` is True, session CRUD uses Cosmos DB.
 When False, the same endpoints transparently use Azure Table Storage.
 
+Cosmos DB structure
+───────────────────
+Container: sessions
+Partition key: /therapist_id
+All queries are scoped to a therapist first.
+
 Shared document fields
 ──────────────────────
-    session_id           : unique session id
-    therapist_id         : partition key / PartitionKey
+    id                   : unique session id (UUID)
+    therapist_id         : partition key / PartitionKey — used for scoping queries
     patient_id           : SHA-256 hash (no patient names stored)
+    status               : session status (uploaded, processing, completed, etc.)
   filename             : str | None
   content_type         : str | None
   audio_blob_path      : str | None
@@ -23,9 +30,9 @@ Endpoints
   GET    /sessions?therapist_id=...                    — list all sessions for a therapist
   GET    /sessions/patient?therapist_id=&patient_first_name=&patient_last_name=  — list patient sessions
   PUT    /sessions/patient?therapist_id=&patient_first_name=&patient_last_name=  — update latest session
-  GET    /sessions/{session_id}?therapist_id=&patient_first_name=&patient_last_name=   — get session
-  PUT    /sessions/{session_id}?therapist_id=&patient_first_name=&patient_last_name=   — partial update
-  DELETE /sessions/{session_id}?therapist_id=&patient_first_name=&patient_last_name=   — delete
+  GET    /sessions/{id}?therapist_id=&patient_first_name=&patient_last_name=   — get session
+  PUT    /sessions/{id}?therapist_id=&patient_first_name=&patient_last_name=   — partial update
+  DELETE /sessions/{id}?therapist_id=&patient_first_name=&patient_last_name=   — delete
   GET    /sessions/jobs/{job_id}                       — poll SOAP workflow job status
 """
 import hashlib
@@ -81,9 +88,10 @@ def _normalize_optional(value: Any) -> Any:
 
 def _entity_to_session_response(entity: dict[str, Any]) -> SessionResponse:
     return SessionResponse(
-        session_id=entity["session_id"],
+        id=entity.get("id") or entity.get("session_id") or entity.get("RowKey", ""),
         therapist_id=entity["therapist_id"],
         patient_id=entity["patient_id"],
+        status=_normalize_optional(entity.get("status")),
         filename=_normalize_optional(entity.get("filename")),
         content_type=_normalize_optional(entity.get("content_type")),
         audio_blob_path=_normalize_optional(entity.get("audio_blob_path")),
@@ -209,7 +217,8 @@ async def list_sessions(
     """When therapist_id is provided, returns sessions for that therapist.
     When therapist_id is omitted, only admin users can list all sessions across all therapists.
     """
-    user_id = (getattr(request.state, "user_id", None) or "").strip().lower()
+    # Try to get user_id from state (set by middleware) or from header
+    user_id = (getattr(request.state, "user_id", None) or request.headers.get("x-user-id") or "").strip().lower()
     
     if not therapist_id and not user_id:
         raise HTTPException(
@@ -443,12 +452,12 @@ async def update_session_by_patient(
 # ── GET ────────────────────────────────────────────────────────────────────────
 
 @router.get(
-    "/sessions/{session_id}",
+    "/sessions/{id}",
     response_model=SessionResponse,
     summary="Get a session by ID (identity verified via patient name hash)",
 )
 async def get_session(
-    session_id: str,
+    id: str,
     therapist_id: str = Query(...),
     patient_first_name: str = Query(...),
     patient_last_name: str = Query(...),
@@ -459,7 +468,7 @@ async def get_session(
     if settings.enable_cosmos_db:
         client, container = await _get_container()
         try:
-            item = await container.read_item(item=session_id, partition_key=therapist_id)
+            item = await container.read_item(item=id, partition_key=therapist_id)
         except cosmos_exc.CosmosResourceNotFoundError:
             raise HTTPException(status_code=404, detail="Session not found.")
         except cosmos_exc.CosmosHttpResponseError as exc:
@@ -471,7 +480,7 @@ async def get_session(
             async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
                 table = service.get_table_client(SESSIONS_TABLE_NAME)
                 await _ensure_sessions_table(table)
-                item = await _get_session_entity_table(table, therapist_id, session_id)
+                item = await _get_session_entity_table(table, therapist_id, id)
         except HTTPException:
             raise
         except HttpResponseError as exc:
@@ -495,9 +504,10 @@ async def get_session(
         )
     # For Table Storage, build response without internal Azure fields
     return SessionResponse(
-        session_id=item.get("session_id", ""),
+        id=item.get("id") or item.get("session_id") or item.get("RowKey", ""),
         therapist_id=item.get("therapist_id", ""),
         patient_id=item.get("patient_id", ""),
+        status=_normalize_optional(item.get("status")),
         filename=_normalize_optional(item.get("filename")),
         content_type=_normalize_optional(item.get("content_type")),
         audio_blob_path=_normalize_optional(item.get("audio_blob_path")),
@@ -513,12 +523,12 @@ async def get_session(
 # ── UPDATE ─────────────────────────────────────────────────────────────────────
 
 @router.put(
-    "/sessions/{session_id}",
+    "/sessions/{id}",
     response_model=SessionResponse,
     summary="Partial update of a session record",
 )
 async def update_session(
-    session_id: str,
+    id: str,
     payload: SessionUpdate,
     therapist_id: str = Query(...),
     patient_first_name: str = Query(...),
@@ -529,13 +539,13 @@ async def update_session(
     if settings.enable_cosmos_db:
         client, container = await _get_container()
         try:
-            item = await container.read_item(item=session_id, partition_key=therapist_id)
+            item = await container.read_item(item=id, partition_key=therapist_id)
             if item.get("patient_id") != expected:
                 raise HTTPException(status_code=403, detail="Patient identity mismatch.")
             updates = {k: v for k, v in payload.model_dump().items() if v is not None}
             updates["updated_at"] = datetime.now(timezone.utc).isoformat()
             item.update(updates)
-            await container.replace_item(item=session_id, body=item)
+            await container.replace_item(item=id, body=item)
             return SessionResponse(**item)
         except HTTPException:
             raise
@@ -550,7 +560,7 @@ async def update_session(
         async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
             table = service.get_table_client(SESSIONS_TABLE_NAME)
             await _ensure_sessions_table(table)
-            item = await _get_session_entity_table(table, therapist_id, session_id)
+            item = await _get_session_entity_table(table, therapist_id, id)
             if item.get("entity_type") != "session":
                 raise HTTPException(status_code=404, detail="Session not found.")
             if item.get("patient_id") != expected:
@@ -571,12 +581,12 @@ async def update_session(
 # ── DELETE ─────────────────────────────────────────────────────────────────────
 
 @router.delete(
-    "/sessions/{session_id}",
+    "/sessions/{id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a session record",
 )
 async def delete_session(
-    session_id: str,
+    id: str,
     therapist_id: str = Query(...),
     patient_first_name: str = Query(...),
     patient_last_name: str = Query(...),
@@ -586,10 +596,10 @@ async def delete_session(
     if settings.enable_cosmos_db:
         client, container = await _get_container()
         try:
-            item = await container.read_item(item=session_id, partition_key=therapist_id)
+            item = await container.read_item(item=id, partition_key=therapist_id)
             if item.get("patient_id") != expected:
                 raise HTTPException(status_code=403, detail="Patient identity mismatch.")
-            await container.delete_item(item=session_id, partition_key=therapist_id)
+            await container.delete_item(item=id, partition_key=therapist_id)
             return
         except HTTPException:
             raise
@@ -604,13 +614,13 @@ async def delete_session(
         async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
             table = service.get_table_client(SESSIONS_TABLE_NAME)
             await _ensure_sessions_table(table)
-            item = await _get_session_entity_table(table, therapist_id, session_id)
+            item = await _get_session_entity_table(table, therapist_id, id)
             if item.get("entity_type") != "session":
                 raise HTTPException(status_code=404, detail="Session not found.")
             if item.get("patient_id") != expected:
                 raise HTTPException(status_code=403, detail="Patient identity mismatch.")
 
-            await table.delete_entity(partition_key=therapist_id, row_key=session_id)
+            await table.delete_entity(partition_key=therapist_id, row_key=id)
     except HTTPException:
         raise
     except HttpResponseError as exc:
@@ -635,7 +645,7 @@ async def create_session(
 ):
     """
     Single endpoint for creating a therapy session from the UI:
-    1. Derives patient_id = SHA-256(therapist_id:first:last) — no PII stored.
+    1. Derives patient_id, no PII stored.
     2. Uploads audio to Azure Blob Storage under therapist/patient/session.
     3. Persists session document in Cosmos DB.
     4. Enqueues a LangGraph SOAP-note generation job.
@@ -684,9 +694,9 @@ async def create_session(
     now = datetime.now(timezone.utc).isoformat()
     cosmos_record = {
         "id": session_id,
-        "session_id": session_id,
         "therapist_id": therapist_id,
         "patient_id": patient_id,
+        "status": "uploaded",
         "filename": original_filename,
         "content_type": mime,
         "audio_blob_path": audio_blob_path,
@@ -712,9 +722,10 @@ async def create_session(
             "PartitionKey": therapist_id,
             "RowKey": session_id,
             "entity_type": "session",
-            "session_id": session_id,
+            "id": session_id,
             "therapist_id": therapist_id,
             "patient_id": patient_id,
+            "status": "uploaded",
             "filename": original_filename,
             "content_type": mime,
             "audio_blob_path": audio_blob_path or "",
@@ -753,9 +764,10 @@ async def create_session(
 
     return SessionUploadResponse(
         job_id=job_id,
-        session_id=session_id,
+        id=session_id,
         therapist_id=therapist_id,
         patient_id=patient_id,
+        status="uploaded",
         filename=original_filename,
         content_type=mime,
         audio_blob_path=audio_blob_path,

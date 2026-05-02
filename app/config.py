@@ -69,10 +69,11 @@ class Settings(BaseSettings):
     # App
     max_upload_size_mb: int = 50
 
-    # Azure Cosmos DB (NoSQL) — sessions container
+    # Azure Cosmos DB (NoSQL) — containers
     cosmos_endpoint: str = ""
     cosmos_key: str = ""
     cosmos_db_name: str = "hivenotes"
+    cosmos_therapists_container: str = "therapists"
     cosmos_sessions_container: str = "sessions"
 
     # LangGraph checkpointing — set to true to enable Azure Table Storage persistence
