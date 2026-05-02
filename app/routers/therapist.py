@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import date, datetime, timezone
 from enum import Enum
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -97,8 +98,6 @@ class TherapistCreate(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "id": "a3f8c2d1-7b4e-4f9a-8c2d-1a7b4e4f9a8c",
-                "therapist_id": "a3f8c2d1-7b4e-4f9a-8c2d-1a7b4e4f9a8c",
                 "reference_id": "TH-4X9KR2",
                 "email": "jane.doe@example.com",
                 "first_name": "Jane",
@@ -123,8 +122,6 @@ class TherapistCreate(BaseModel):
         }
     }
     # ── Core identity ──────────────────────────────────────────────────────
-    id: str | None = Field(default=None, description="Unique identifier (UUID) — auto-generated if omitted")
-    therapist_id: str | None = Field(default=None, description="Therapist unique ID (UUID)")
     reference_id: str | None = Field(default=None, description="Human-readable reference ID, e.g. TH-4X9KR2")
     first_name: str = Field(..., description="Given name")
     last_name:  str = Field(..., description="Family name")
@@ -253,14 +250,14 @@ async def register_therapist(payload: TherapistCreate):
     same table under PartitionKey ``mapping~{therapist_id}`` so the therapist can
     later be associated with additional practices without schema changes.
     """
-    therapist_id = payload.therapist_id or payload.email.lower()
+    therapist_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
 
     # ── Therapist entity ────────────────────────────────────────────────────────────────
     entity = {
         "PartitionKey":        therapist_id,
         "RowKey":              therapist_id,
-        "id":                  payload.id or therapist_id,
+        "id":                  therapist_id,
         "therapist_id":        therapist_id,
         "reference_id":        payload.reference_id or "",
         "first_name":          payload.first_name,
