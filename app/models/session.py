@@ -25,7 +25,7 @@ class SessionResponse(BaseModel):
         "json_schema_extra": {
             "example": {
                 "id": "uuid-session-123",
-                "therapist_id": "jane.doe@example.com",
+                "therapist_id": "test123",
                 "patient_id": "sha256-hash-here",
                 "status": "uploaded",
                 "session_at": "2026-04-26T10:30:00Z",
