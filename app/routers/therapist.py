@@ -126,15 +126,15 @@ class TherapistCreate(BaseModel):
     first_name: str = Field(..., description="Given name")
     last_name:  str = Field(..., description="Family name")
     email: str = Field(..., description="Work email — used as the login identifier")
-    password: str | None = Field(default=None, min_length=8, description="Temporary password (MVP only — replace with Entra SSO)")
+    password: str = Field(..., min_length=8, description="Temporary password (MVP only — replace with Entra SSO)")
 
-    # ── Demographics — required ────────────────────────────────────────────
-    sex:           BiologicalSex  = Field(..., description="Biological sex")
-    gender:        GenderIdentity = Field(..., description="Gender identity")
-    date_of_birth: date           = Field(..., description="Date of birth (YYYY-MM-DD)")
+    # ── Demographics — optional ────────────────────────────────────────────
+    sex:           BiologicalSex  | None = Field(default=None, description="Biological sex")
+    gender:        GenderIdentity | None = Field(default=None, description="Gender identity")
+    date_of_birth: date           | None = Field(default=None, description="Date of birth (YYYY-MM-DD)")
 
-    # ── Licensing — required; uniquely identifies the therapist legally ────
-    license: License = Field(..., description="License/credential information")
+    # ── Licensing — optional ──────────────────────────────────────────────
+    license: License | None = Field(default=None, description="License/credential information")
 
     # ── Optional — useful for billing / future expansion ──────────────────
     npi_number:          str | None = Field(default=None, description="National Provider Identifier (NPI)")
@@ -208,10 +208,10 @@ class TherapistResponse(BaseModel):
     first_name:   str
     last_name:    str
     email:        str
-    sex:           BiologicalSex
-    gender:        GenderIdentity
-    date_of_birth: date
-    license:             License
+    sex:           BiologicalSex  | None = None
+    gender:        GenderIdentity | None = None
+    date_of_birth: date           | None = None
+    license:             License  | None = None
     npi_number:          str | None = None
     years_of_experience: int | None = None
     specialization:      str | None = None
@@ -263,12 +263,12 @@ async def register_therapist(payload: TherapistCreate):
         "first_name":          payload.first_name,
         "last_name":           payload.last_name,
         "email":               payload.email,
-        "sex":                 payload.sex.value,
-        "gender":              payload.gender.value,
-        "date_of_birth":       payload.date_of_birth.isoformat(),
-        "license_type":        payload.license.type.value,
-        "license_state":       payload.license.state,
-        "license_number":      payload.license.number,
+        "sex":                 payload.sex.value if payload.sex else "",
+        "gender":              payload.gender.value if payload.gender else "",
+        "date_of_birth":       payload.date_of_birth.isoformat() if payload.date_of_birth else "",
+        "license_type":        payload.license.type.value if payload.license else "",
+        "license_state":       payload.license.state if payload.license else "",
+        "license_number":      payload.license.number if payload.license else "",
         "npi_number":          payload.npi_number or "",
         "years_of_experience": payload.years_of_experience if payload.years_of_experience is not None else "",
         "specialization":      payload.specialization or "",
@@ -354,14 +354,14 @@ async def get_therapist(therapist_id: str):
                 first_name=            e["first_name"],
                 last_name=             e["last_name"],
                 email=                 e["email"],
-                sex=                   BiologicalSex(e["sex"]),
-                gender=                GenderIdentity(e["gender"]),
-                date_of_birth=         e["date_of_birth"],
+                sex=                   BiologicalSex(e["sex"]) if e.get("sex") else None,
+                gender=                GenderIdentity(e["gender"]) if e.get("gender") else None,
+                date_of_birth=         e.get("date_of_birth") or None,
                 license=               License(
                     type=LicenseType(e["license_type"]),
                     state=e["license_state"],
                     number=e["license_number"]
-                ),
+                ) if e.get("license_type") else None,
                 npi_number=            e.get("npi_number") or None,
                 years_of_experience=   int(e["years_of_experience"]) if e.get("years_of_experience") else None,
                 specialization=        e.get("specialization") or None,
@@ -416,14 +416,14 @@ async def update_therapist(therapist_id: str, payload: TherapistUpdate):
                 first_name=            entity["first_name"],
                 last_name=             entity["last_name"],
                 email=                 entity["email"],
-                sex=                   BiologicalSex(entity["sex"]),
-                gender=                GenderIdentity(entity["gender"]),
-                date_of_birth=         entity["date_of_birth"],
+                sex=                   BiologicalSex(entity["sex"]) if entity.get("sex") else None,
+                gender=                GenderIdentity(entity["gender"]) if entity.get("gender") else None,
+                date_of_birth=         entity.get("date_of_birth") or None,
                 license=               License(
                     type=LicenseType(entity["license_type"]),
                     state=entity["license_state"],
                     number=entity["license_number"]
-                ),
+                ) if entity.get("license_type") else None,
                 npi_number=            entity.get("npi_number") or None,
                 years_of_experience=   int(entity["years_of_experience"]) if entity.get("years_of_experience") else None,
                 specialization=        entity.get("specialization") or None,
@@ -517,14 +517,14 @@ async def list_therapists(
                     first_name=            e["first_name"],
                     last_name=             e["last_name"],
                     email=                 e["email"],
-                    sex=                   BiologicalSex(e["sex"]),
-                    gender=                GenderIdentity(e["gender"]),
-                    date_of_birth=         e["date_of_birth"],
+                    sex=                   BiologicalSex(e["sex"]) if e.get("sex") else None,
+                    gender=                GenderIdentity(e["gender"]) if e.get("gender") else None,
+                    date_of_birth=         e.get("date_of_birth") or None,
                     license=               License(
                         type=LicenseType(e["license_type"]),
                         state=e["license_state"],
                         number=e["license_number"]
-                    ),
+                    ) if e.get("license_type") else None,
                     npi_number=            e.get("npi_number") or None,
                     years_of_experience=   int(e["years_of_experience"]) if e.get("years_of_experience") else None,
                     specialization=        e.get("specialization") or None,
@@ -555,14 +555,14 @@ async def list_therapists(
                     first_name=            e["first_name"],
                     last_name=             e["last_name"],
                     email=                 e["email"],
-                    sex=                   BiologicalSex(e["sex"]),
-                    gender=                GenderIdentity(e["gender"]),
-                    date_of_birth=         e["date_of_birth"],
+                    sex=                   BiologicalSex(e["sex"]) if e.get("sex") else None,
+                    gender=                GenderIdentity(e["gender"]) if e.get("gender") else None,
+                    date_of_birth=         e.get("date_of_birth") or None,
                     license=               License(
                         type=LicenseType(e["license_type"]),
                         state=e["license_state"],
                         number=e["license_number"]
-                    ),
+                    ) if e.get("license_type") else None,
                     npi_number=            e.get("npi_number") or None,
                     years_of_experience=   int(e["years_of_experience"]) if e.get("years_of_experience") else None,
                     specialization=        e.get("specialization") or None,
