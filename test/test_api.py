@@ -116,6 +116,74 @@ class _DummyTableService:
     def from_connection_string(conn):
         return _DummyTableService()
 
+# ── Therapist fake data ──────────────────────────────────────────────────────
+_FAKE_THERAPIST_ID = "therapist-uuid-1"
+_FAKE_THERAPIST = {
+    "id":                  _FAKE_THERAPIST_ID,
+    "therapist_id":        _FAKE_THERAPIST_ID,
+    "reference_id":        "TH-001",
+    "first_name":          "Jane",
+    "last_name":           "Doe",
+    "email":               "jane@example.com",
+    "sex":                 "Female",
+    "gender":              "Woman",
+    "date_of_birth":       "1985-06-15",
+    "license_type":        "LCSW",
+    "license_state":       "WA",
+    "license_number":      "LIC-WA-12345",
+    "npi_number":          "",
+    "years_of_experience": "",
+    "specialization":      "",
+    "profile_picture_url": "",
+    "created_at":          "2026-01-01T00:00:00+00:00",
+    "updated_at":          "2026-01-01T00:00:00+00:00",
+}
+
+
+class _DummyTherapistContainer:
+    """Cosmos DB container stub for therapist tests.
+
+    Set ``_query_results`` to control what ``query_items`` yields:
+    - Empty list (default) → email-uniqueness check finds no conflicts.
+    - [_FAKE_THERAPIST]   → admin list returns the fake doc.
+    """
+    _query_results: list = []
+
+    async def create_item(self, body):
+        return body
+
+    async def read_item(self, item, partition_key):
+        if item == _FAKE_THERAPIST_ID:
+            return dict(_FAKE_THERAPIST)
+        raise CosmosResourceNotFoundError(message="Not found", response=None)
+
+    def query_items(self, query, parameters=None, partition_key=None):
+        results = list(_DummyTherapistContainer._query_results)
+        async def _gen():
+            for r in results:
+                yield r
+        return _gen()
+
+    async def upsert_item(self, body):
+        return body
+
+    async def replace_item(self, item, body):
+        return body
+
+    async def delete_item(self, item, partition_key):
+        return None
+
+
+class _DummyTherapistDB:
+    async def create_container_if_not_exists(self, **kwargs):
+        return _DummyTherapistContainer()
+
+
+class _DummyTherapistCosmosClient:
+    def __init__(self, *args, **kwargs): pass
+    async def close(self): pass
+    async def create_database_if_not_exists(self, **kwargs):
+        return _DummyTherapistDB()
 
 # ── Blob no-ops ───────────────────────────────────────────────────────────────
 async def _fake_blob(therapist_id, patient_id, session_id, filename, data, content_type):
@@ -129,34 +197,64 @@ async def _fake_meta(therapist_id, patient_id, session_id, metadata):
 # Tests
 # ══════════════════════════════════════════════════════════════════════════════
 
-def test_account_register():
-    account_mod.TableServiceClient = _DummyTableService
+def test_therapist_register():
+    """POST /therapist: registers therapist via Cosmos DB (default path)."""
+    account_mod.CosmosClient = _DummyTherapistCosmosClient
+    _DummyTherapistContainer._query_results = []  # no existing therapist → no conflict
     client = TestClient(app)
-    # Required fields only (no initial_practice — that's optional)
     payload = {
-        "first_name":     "Jane",
-        "last_name":      "Doe",
-        "email":          "jane@example.com",
-        "password":       "secret123",
-        "sex":            "Female",
-        "gender":         "Woman",
-        "date_of_birth":  "1985-06-15",
-        "license_number": "LIC-WA-12345",
-        "license_state":  "WA",
-        "license_type":   "LCSW",
+        "first_name":    "Jane",
+        "last_name":     "Doe",
+        "email":         "jane@example.com",
+        "password":      "secret123",
+        "sex":           "Female",
+        "gender":        "Woman",
+        "date_of_birth": "1985-06-15",
+        "license": {
+            "type":   "LCSW",
+            "state":  "WA",
+            "number": "LIC-WA-12345",
+        },
     }
     r = client.post("/api/v1/therapist", json=payload)
     assert r.status_code == 201, r.text
     data = r.json()
     assert data["first_name"] == "Jane"
     assert data["last_name"] == "Doe"
-    assert data["license_type"] == "LCSW"
-    assert data["license_state"] == "WA"
+    assert data["license"]["type"] == "LCSW"
+    assert data["license"]["state"] == "WA"
     assert data["sex"] == "Female"
     assert data["gender"] == "Woman"
     assert data["date_of_birth"] == "1985-06-15"
     assert "password" not in data, "password must never be returned in the response"
     assert "therapist_id" in data
+
+
+def test_therapist_register_table_storage():
+    """POST /therapist: registers therapist via Table Storage (enable_cosmos_db=False)."""
+    from app.config import settings as app_settings
+    app_settings.enable_cosmos_db = False
+    account_mod.TableServiceClient = _DummyTableService
+    try:
+        client = TestClient(app)
+        payload = {
+            "first_name":    "Bob",
+            "last_name":     "Builder",
+            "email":         "bob@example.com",
+            "password":      "secret456",
+            "license": {
+                "type":   "LPC",
+                "state":  "CA",
+                "number": "LIC-CA-99999",
+            },
+        }
+        r = client.post("/api/v1/therapist", json=payload)
+        assert r.status_code == 201, r.text
+        data = r.json()
+        assert data["first_name"] == "Bob"
+        assert data["license"]["type"] == "LPC"
+    finally:
+        app_settings.enable_cosmos_db = True  # restore default
 
 
 def test_list_providers():
@@ -165,6 +263,82 @@ def test_list_providers():
     assert r.status_code == 200
     providers = [p["provider"] for p in r.json()]
     assert "entra" in providers or "google" in providers
+
+
+def test_therapist_get():
+    """GET /therapist/{id}: fetches therapist from Cosmos DB."""
+    account_mod.CosmosClient = _DummyTherapistCosmosClient
+    client = TestClient(app)
+    r = client.get(f"/api/v1/therapist/{_FAKE_THERAPIST_ID}")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["therapist_id"] == _FAKE_THERAPIST_ID
+    assert data["first_name"] == "Jane"
+    assert data["license"]["type"] == "LCSW"
+
+
+def test_therapist_get_not_found():
+    """GET /therapist/{id}: returns 404 for unknown therapist."""
+    account_mod.CosmosClient = _DummyTherapistCosmosClient
+    client = TestClient(app)
+    r = client.get("/api/v1/therapist/does-not-exist")
+    assert r.status_code == 404, r.text
+
+
+def test_therapist_update():
+    """PUT /therapist/{id}: updates allowed profile fields."""
+    account_mod.CosmosClient = _DummyTherapistCosmosClient
+    client = TestClient(app)
+    r = client.put(
+        f"/api/v1/therapist/{_FAKE_THERAPIST_ID}",
+        json={"specialization": "DBT", "years_of_experience": 10},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["therapist_id"] == _FAKE_THERAPIST_ID
+
+
+def test_therapist_delete():
+    """DELETE /therapist/{id}: deletes therapist, returns 204."""
+    account_mod.CosmosClient = _DummyTherapistCosmosClient
+    client = TestClient(app)
+    r = client.delete(f"/api/v1/therapist/{_FAKE_THERAPIST_ID}")
+    assert r.status_code == 204, r.text
+
+
+def test_therapist_list_by_id():
+    """GET /therapists?therapist_id=...: returns 1-item list for known therapist."""
+    account_mod.CosmosClient = _DummyTherapistCosmosClient
+    client = TestClient(app)
+    r = client.get("/api/v1/therapists", params={"therapist_id": _FAKE_THERAPIST_ID})
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert isinstance(items, list)
+    assert len(items) == 1
+    assert items[0]["therapist_id"] == _FAKE_THERAPIST_ID
+
+
+def test_therapist_list_admin():
+    """GET /therapists (admin): returns all therapists when x-user-id=admin."""
+    account_mod.CosmosClient = _DummyTherapistCosmosClient
+    _DummyTherapistContainer._query_results = [_FAKE_THERAPIST]
+    try:
+        client = TestClient(app)
+        r = client.get("/api/v1/therapists", headers={"x-user-id": "admin"})
+        assert r.status_code == 200, r.text
+        items = r.json()
+        assert isinstance(items, list)
+        assert len(items) >= 1
+    finally:
+        _DummyTherapistContainer._query_results = []
+
+
+def test_therapist_list_forbidden():
+    """GET /therapists without therapist_id and non-admin user should return 403."""
+    account_mod.CosmosClient = _DummyTherapistCosmosClient
+    client = TestClient(app)
+    r = client.get("/api/v1/therapists", headers={"x-user-id": "someuser"})
+    assert r.status_code == 403, r.text
 
 
 def test_session_create():
@@ -187,7 +361,7 @@ def test_session_create():
     assert j["patient_id"] == _P_HASH, "auto-derived patient_id must match expected hash"
     assert "patient_first_name" not in j
     assert "patient_last_name" not in j
-    assert "session_id" in j
+    assert "id" in j
     assert "job_id" in j
     assert "audio_blob_path" in j
 
@@ -228,7 +402,7 @@ def test_session_get_by_patient():
     items = r.json()
     assert isinstance(items, list)
     assert items[0]["patient_id"] == _P_HASH
-    assert items[0]["session_id"] == "sess-1"
+    assert items[0]["id"] == "sess-1"
 
 
 def test_session_put_by_patient():
@@ -256,7 +430,7 @@ def test_session_get():
     })
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["session_id"] == "sess-1"
+    assert data["id"] == "sess-1"
     assert data["patient_id"] == _P_HASH
     assert "patient_first_name" not in data
 

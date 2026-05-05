@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # ENABLE_COSMOS_DB=false     → skip Cosmos DB write/read (session record persistence)
     # LangGraph workflow always runs regardless of these flags.
     enable_blob_storage: bool = False
-    enable_cosmos_db: bool = False
+    enable_cosmos_db: bool = True
 
     # App
     max_upload_size_mb: int = 50
