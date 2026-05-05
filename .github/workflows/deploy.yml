@@ -33,8 +33,10 @@ jobs:
 
       - name: Build and push Docker image
         run: |
-          docker build -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
-          docker build -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest .
+          docker build \
+            -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest \
+            .
           docker push ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           docker push ${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
 
@@ -42,32 +44,23 @@ jobs:
         # Workaround for Azure CLI 2.85.0 bug: `az containerapp up/update` crashes
         # when the existing app's template.containers is null in the ARM response
         # (TypeError: 'NoneType' object is not iterable / has no len()).
-        # We bypass the broken CLI code path by PATCHing the ARM resource directly.
+        # We bypass the broken CLI code path by GETting the current spec, patching
+        # only the image with jq, then re-applying the full spec via PATCH.
+        # This preserves all existing environment variables set on the container app.
         run: |
           SUB=$(az account show --query id -o tsv)
           IMAGE="${{ secrets.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          ARM_URL="https://management.azure.com/subscriptions/${SUB}/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.App/containerApps/${{ env.CONTAINER_APP_NAME }}?api-version=2024-03-01"
+
+          # Fetch current app spec so we can preserve env vars, scaling rules, etc.
+          CURRENT=$(az rest --method GET --url "${ARM_URL}")
+
+          # Update only the image of the first container; leave everything else intact.
+          PATCHED=$(echo "${CURRENT}" | jq --arg img "${IMAGE}" \
+            '.properties.template.containers[0].image = $img
+             | del(.systemData, .identity.userAssignedIdentities[].clientSecretUrl)')
+
           az rest --method PATCH \
-            --url "https://management.azure.com/subscriptions/${SUB}/resourceGroups/${{ env.RESOURCE_GROUP }}/providers/Microsoft.App/containerApps/${{ env.CONTAINER_APP_NAME }}?api-version=2024-03-01" \
+            --url "${ARM_URL}" \
             --headers "Content-Type=application/json" \
-            --body "{
-              \"properties\": {
-                \"configuration\": {
-                  \"secrets\": [{
-                    \"name\": \"registry-password\",
-                    \"value\": \"${{ secrets.REGISTRY_PASSWORD }}\"
-                  }],
-                  \"ingress\": {\"external\": true, \"targetPort\": 8000},
-                  \"registries\": [{
-                    \"server\": \"${{ secrets.REGISTRY_LOGIN_SERVER }}\",
-                    \"username\": \"${{ secrets.REGISTRY_USERNAME }}\",
-                    \"passwordSecretRef\": \"registry-password\"
-                  }]
-                },
-                \"template\": {
-                  \"containers\": [{
-                    \"name\": \"${{ env.CONTAINER_APP_NAME }}\",
-                    \"image\": \"${IMAGE}\"
-                  }]
-                }
-              }
-            }"
+            --body "${PATCHED}"
