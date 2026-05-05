@@ -132,7 +132,7 @@ async def run_workflow(
     Updates `job_store` with status and result at each step.
     """
     job_store[job_id]["status"] = "running"
-    job_store[job_id]["step"] = "fetch_folder → store_audio → transcribe → store_transcript → generate_soap → generate_docx → store_docx"
+    job_store[job_id]["step"] = None
 
     logger.info(
         "[%s] ▶ WORKFLOW START  therapist=%s  client=%s  session=%s  file=%s  size=%d bytes",
@@ -157,9 +157,17 @@ async def run_workflow(
     langgraph_config = {"configurable": {"thread_id": job_id}}
 
     try:
-        final_state: GraphState = await _compiled_graph.ainvoke(
-            initial_state, config=langgraph_config
-        )
+        # astream yields {node_name: node_output} after each node completes,
+        # letting us update job_store["step"] in real time instead of pre-setting
+        # a static pipeline string.
+        final_state: GraphState = dict(initial_state)
+        async for chunk in _compiled_graph.astream(initial_state, config=langgraph_config):
+            node_name = next(iter(chunk))
+            job_store[job_id]["step"] = node_name
+            final_state.update(chunk[node_name])
+            if final_state.get("error"):
+                break
+
         elapsed_total = time.perf_counter() - t_start
 
         if final_state.get("error"):
