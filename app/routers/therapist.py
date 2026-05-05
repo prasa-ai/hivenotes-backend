@@ -4,11 +4,9 @@ from datetime import date, datetime, timezone
 from enum import Enum
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr, Field
-from azure.data.tables.aio import TableServiceClient
 from azure.cosmos import PartitionKey
 from azure.cosmos import exceptions as cosmos_exc
 from azure.cosmos.aio import CosmosClient
-from azure.core.exceptions import HttpResponseError, ResourceNotFoundError, ResourceExistsError
 
 from app.config import settings
 
@@ -270,17 +268,15 @@ def _entity_to_therapist_response(e: dict, therapist_id: str | None = None) -> T
     summary="Register a therapist account",
 )
 async def register_therapist(payload: TherapistCreate):
-    """Register a therapist and persist a record to the configured backend.
+    """Register a therapist and persist a record in Cosmos DB.
 
-    When ``settings.enable_cosmos_db`` is True, the record is stored in Cosmos DB
-    (partition key: /id).  Otherwise, Azure Table Storage is used
-    (PartitionKey/RowKey = therapist_id).
+    Partition key: /id.
     If ``initial_practice`` is supplied a practice-mapping record is also written.
     """
     therapist_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
 
-    # ── Shared document fields (Table Storage adds PartitionKey/RowKey below) ──
+    # ── Document fields ──────────────────────────────────────────────────────────────
     doc = {
         "id":                  therapist_id,
         "therapist_id":        therapist_id,
@@ -413,53 +409,23 @@ async def register_therapist(payload: TherapistCreate):
     summary="Get therapist details by therapist_id",
 )
 async def get_therapist(therapist_id: str):
-    """Fetch therapist details by therapist_id.
-
-    Uses Cosmos DB when ``settings.enable_cosmos_db`` is True, otherwise falls
-    back to Azure Table Storage.
-    """
-    if settings.enable_cosmos_db:
-        client, container = await _get_therapists_container()
-        try:
-            doc = await container.read_item(item=therapist_id, partition_key=therapist_id)
-            return _entity_to_therapist_response(doc, therapist_id)
-        except cosmos_exc.CosmosResourceNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Therapist '{therapist_id}' not found.",
-            )
-        except cosmos_exc.CosmosHttpResponseError as exc:
-            if exc.status_code == 404:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Therapist '{therapist_id}' not found.",
-                )
-            logger.error("get_therapist: Cosmos DB error — %s", exc.message)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to fetch therapist. Please try again.",
-            )
-        except Exception as exc:
-            logger.error("get_therapist: Unexpected error — %s", str(exc))
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="An unexpected error occurred. Please try again.",
-            )
-        finally:
-            await client.close()
-
+    """Fetch therapist details by therapist_id from Cosmos DB."""
+    client, container = await _get_therapists_container()
     try:
-        async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
-            table = service.get_table_client(settings.azure_table_name)
-            e = await table.get_entity(partition_key=therapist_id, row_key=therapist_id)
-            return _entity_to_therapist_response(e, therapist_id)
-    except ResourceNotFoundError:
+        doc = await container.read_item(item=therapist_id, partition_key=therapist_id)
+        return _entity_to_therapist_response(doc, therapist_id)
+    except cosmos_exc.CosmosResourceNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Therapist '{therapist_id}' not found.",
         )
-    except HttpResponseError as exc:
-        logger.error("get_therapist: Table Storage error — %s", exc.message)
+    except cosmos_exc.CosmosHttpResponseError as exc:
+        if exc.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Therapist '{therapist_id}' not found.",
+            )
+        logger.error("get_therapist: Cosmos DB error — %s", exc.message)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Failed to fetch therapist. Please try again.",
@@ -470,6 +436,8 @@ async def get_therapist(therapist_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred. Please try again.",
         )
+    finally:
+        await client.close()
     
 @router.put(
     "/therapist/{therapist_id}",
@@ -477,66 +445,31 @@ async def get_therapist(therapist_id: str):
     summary="Update therapist profile fields",
 )
 async def update_therapist(therapist_id: str, payload: TherapistUpdate):
-    """Partially update a therapist's profile.
+    """Partially update a therapist's profile in Cosmos DB.
 
     Only non-identity fields may be changed here.  Email, licence details, and
     credentials require a separate verified workflow and are intentionally excluded.
-    Uses Cosmos DB when ``settings.enable_cosmos_db`` is True, otherwise Azure
-    Table Storage.
     """
-    if settings.enable_cosmos_db:
-        client, container = await _get_therapists_container()
-        try:
-            doc = await container.read_item(item=therapist_id, partition_key=therapist_id)
-            updates = payload.model_dump(exclude_none=True)
-            doc.update(updates)
-            doc["updated_at"] = datetime.now(timezone.utc).isoformat()
-            await container.replace_item(item=therapist_id, body=doc)
-            return _entity_to_therapist_response(doc, therapist_id)
-        except cosmos_exc.CosmosResourceNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Therapist '{therapist_id}' not found.",
-            )
-        except cosmos_exc.CosmosHttpResponseError as exc:
-            if exc.status_code == 404:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Therapist '{therapist_id}' not found.",
-                )
-            logger.error("update_therapist: Cosmos DB error — %s", exc.message)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to update therapist. Please try again.",
-            )
-        except Exception as exc:
-            logger.error("update_therapist: Unexpected error — %s", str(exc))
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="An unexpected error occurred. Please try again.",
-            )
-        finally:
-            await client.close()
-
+    client, container = await _get_therapists_container()
     try:
-        async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
-            table = service.get_table_client(settings.azure_table_name)
-            entity = await table.get_entity(partition_key=therapist_id, row_key=therapist_id)
-
-            updates = payload.model_dump(exclude_none=True)
-            entity.update(updates)
-            entity["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-            await table.update_entity(mode="merge", entity=entity)
-
-            return _entity_to_therapist_response(entity, therapist_id)
-    except ResourceNotFoundError:
+        doc = await container.read_item(item=therapist_id, partition_key=therapist_id)
+        updates = payload.model_dump(exclude_none=True)
+        doc.update(updates)
+        doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await container.replace_item(item=therapist_id, body=doc)
+        return _entity_to_therapist_response(doc, therapist_id)
+    except cosmos_exc.CosmosResourceNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Therapist '{therapist_id}' not found.",
         )
-    except HttpResponseError as exc:
-        logger.error("update_therapist: Table Storage error — %s", exc.message)
+    except cosmos_exc.CosmosHttpResponseError as exc:
+        if exc.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Therapist '{therapist_id}' not found.",
+            )
+        logger.error("update_therapist: Cosmos DB error — %s", exc.message)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Failed to update therapist. Please try again.",
@@ -547,6 +480,8 @@ async def update_therapist(therapist_id: str, payload: TherapistUpdate):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred. Please try again.",
         )
+    finally:
+        await client.close()
     
 @router.delete(
     "/therapist/{therapist_id}",
@@ -554,52 +489,22 @@ async def update_therapist(therapist_id: str, payload: TherapistUpdate):
     summary="Delete a therapist account",
 )
 async def delete_therapist(therapist_id: str):
-    """Delete a therapist account.
-
-    Uses Cosmos DB when ``settings.enable_cosmos_db`` is True, otherwise Azure
-    Table Storage.
-    """
-    if settings.enable_cosmos_db:
-        client, container = await _get_therapists_container()
-        try:
-            await container.delete_item(item=therapist_id, partition_key=therapist_id)
-        except cosmos_exc.CosmosResourceNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Therapist '{therapist_id}' not found.",
-            )
-        except cosmos_exc.CosmosHttpResponseError as exc:
-            if exc.status_code == 404:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Therapist '{therapist_id}' not found.",
-                )
-            logger.error("delete_therapist: Cosmos DB error — %s", exc.message)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to delete therapist. Please try again.",
-            )
-        except Exception as exc:
-            logger.error("delete_therapist: Unexpected error — %s", str(exc))
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="An unexpected error occurred. Please try again.",
-            )
-        finally:
-            await client.close()
-        return
-
+    """Delete a therapist account from Cosmos DB."""
+    client, container = await _get_therapists_container()
     try:
-        async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
-            table = service.get_table_client(settings.azure_table_name)
-            await table.delete_entity(partition_key=therapist_id, row_key=therapist_id)
-    except ResourceNotFoundError:
+        await container.delete_item(item=therapist_id, partition_key=therapist_id)
+    except cosmos_exc.CosmosResourceNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Therapist '{therapist_id}' not found.",
         )
-    except HttpResponseError as exc:
-        logger.error("delete_therapist: Table Storage error — %s", exc.message)
+    except cosmos_exc.CosmosHttpResponseError as exc:
+        if exc.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Therapist '{therapist_id}' not found.",
+            )
+        logger.error("delete_therapist: Cosmos DB error — %s", exc.message)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Failed to delete therapist. Please try again.",
@@ -610,6 +515,8 @@ async def delete_therapist(therapist_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred. Please try again.",
         )
+    finally:
+        await client.close()
     
 @router.get(
     "/therapists",
@@ -624,7 +531,6 @@ async def list_therapists(
 
     - If therapist_id is provided, returns that single therapist (as a 1-item list).
     - If therapist_id is omitted, only admin users can list all therapists via x-user-id header.
-    Uses Cosmos DB when ``settings.enable_cosmos_db`` is True, otherwise Azure Table Storage.
     """
     # Try to get user_id from state (set by middleware) or from header
     user_id = (getattr(request.state, "user_id", None) or request.headers.get("x-user-id") or "").strip().lower()
@@ -635,91 +541,43 @@ async def list_therapists(
             detail="Either ?therapist_id=<id> query parameter or x-user-id header must be provided.",
         )
 
-    if settings.enable_cosmos_db:
-        client, container = await _get_therapists_container()
-        try:
-            therapists = []
-            if therapist_id:
-                try:
-                    doc = await container.read_item(item=therapist_id, partition_key=therapist_id)
-                    therapists.append(_entity_to_therapist_response(doc, therapist_id))
-                except cosmos_exc.CosmosResourceNotFoundError:
+    client, container = await _get_therapists_container()
+    try:
+        therapists = []
+        if therapist_id:
+            try:
+                doc = await container.read_item(item=therapist_id, partition_key=therapist_id)
+                therapists.append(_entity_to_therapist_response(doc, therapist_id))
+            except cosmos_exc.CosmosResourceNotFoundError:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Therapist '{therapist_id}' not found.",
+                )
+            except cosmos_exc.CosmosHttpResponseError as exc:
+                if exc.status_code == 404:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail=f"Therapist '{therapist_id}' not found.",
                     )
-                except cosmos_exc.CosmosHttpResponseError as exc:
-                    if exc.status_code == 404:
-                        raise HTTPException(
-                            status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"Therapist '{therapist_id}' not found.",
-                        )
-                    raise
-                return therapists
-
-            if user_id != "admin":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Only admin can list all therapists.",
-                )
-
-            # Admin: list all therapist documents (exclude practice_mapping records)
-            async for doc in container.query_items(
-                query="SELECT * FROM c WHERE NOT STARTSWITH(c.id, 'mapping~')",
-            ):
-                therapists.append(_entity_to_therapist_response(doc))
+                raise
             return therapists
-        except HTTPException:
-            raise
-        except cosmos_exc.CosmosHttpResponseError as exc:
-            logger.error("list_therapists: Cosmos DB error — %s", exc.message)
+
+        if user_id != "admin":
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to list therapists. Please try again.",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only admin can list all therapists.",
             )
-        except Exception as exc:
-            logger.error("list_therapists: Unexpected error — %s", str(exc))
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="An unexpected error occurred. Please try again.",
-            )
-        finally:
-            await client.close()
 
-    try:
-        async with TableServiceClient.from_connection_string(settings.azure_table_connection_string) as service:
-            table = service.get_table_client(settings.azure_table_name)
-
-            therapists = []
-
-            if therapist_id:
-                tid = therapist_id.lower()
-                e = await table.get_entity(partition_key=tid, row_key=tid)
-                therapists.append(_entity_to_therapist_response(e, e.get("RowKey", tid)))
-                return therapists
-
-            if user_id != "admin":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Only admin can list all therapists.",
-                )
-
-            entities = table.list_entities()
-            async for e in entities:
-                # Skip non-therapist rows (e.g., mapping rows) kept in the same table.
-                if e.get("PartitionKey") != e.get("RowKey"):
-                    continue
-                if "license_number" not in e or "license_type" not in e:
-                    continue
-                therapists.append(_entity_to_therapist_response(e, e.get("RowKey", "")))
-            return therapists
-    except ResourceNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Therapist '{therapist_id}' not found.",
-        )
-    except HttpResponseError as exc:
-        logger.error("list_therapists: Table Storage error — %s", exc.message)
+        # Admin: list all therapist documents (exclude practice_mapping records)
+        async for doc in container.query_items(
+            query="SELECT * FROM c WHERE NOT STARTSWITH(c.id, 'mapping~')",
+        ):
+            therapists.append(_entity_to_therapist_response(doc))
+        return therapists
+    except HTTPException:
+        raise
+    except cosmos_exc.CosmosHttpResponseError as exc:
+        logger.error("list_therapists: Cosmos DB error — %s", exc.message)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Failed to list therapists. Please try again.",
@@ -730,3 +588,5 @@ async def list_therapists(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred. Please try again.",
         )
+    finally:
+        await client.close()

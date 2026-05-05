@@ -101,21 +101,6 @@ class _DummyCosmosClient:
         return _DummyDB()
 
 
-# ── Azure Table dummy (for account router) ────────────────────────────────────
-class _DummyTable:
-    async def create_table(self): return None
-    async def create_entity(self, entity): return None
-
-
-class _DummyTableService:
-    async def __aenter__(self): return self
-    async def __aexit__(self, *_): return None
-    def get_table_client(self, name): return _DummyTable()
-
-    @staticmethod
-    def from_connection_string(conn):
-        return _DummyTableService()
-
 # ── Therapist fake data ──────────────────────────────────────────────────────
 _FAKE_THERAPIST_ID = "therapist-uuid-1"
 _FAKE_THERAPIST = {
@@ -228,33 +213,6 @@ def test_therapist_register():
     assert data["date_of_birth"] == "1985-06-15"
     assert "password" not in data, "password must never be returned in the response"
     assert "therapist_id" in data
-
-
-def test_therapist_register_table_storage():
-    """POST /therapist: registers therapist via Table Storage (enable_cosmos_db=False)."""
-    from app.config import settings as app_settings
-    app_settings.enable_cosmos_db = False
-    account_mod.TableServiceClient = _DummyTableService
-    try:
-        client = TestClient(app)
-        payload = {
-            "first_name":    "Bob",
-            "last_name":     "Builder",
-            "email":         "bob@example.com",
-            "password":      "secret456",
-            "license": {
-                "type":   "LPC",
-                "state":  "CA",
-                "number": "LIC-CA-99999",
-            },
-        }
-        r = client.post("/api/v1/therapist", json=payload)
-        assert r.status_code == 201, r.text
-        data = r.json()
-        assert data["first_name"] == "Bob"
-        assert data["license"]["type"] == "LPC"
-    finally:
-        app_settings.enable_cosmos_db = True  # restore default
 
 
 def test_list_providers():
