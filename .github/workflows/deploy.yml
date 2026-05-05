@@ -58,7 +58,7 @@ jobs:
           # Update only the image of the first container; leave everything else intact.
           PATCHED=$(echo "${CURRENT}" | jq --arg img "${IMAGE}" \
             '.properties.template.containers[0].image = $img
-             | del(.systemData, .identity.userAssignedIdentities[].clientSecretUrl)')
+             | del(.systemData, .identity.userAssignedIdentities[]?.clientSecretUrl)')
 
           az rest --method PATCH \
             --url "${ARM_URL}" \
