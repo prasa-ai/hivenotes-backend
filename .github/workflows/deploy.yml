@@ -55,9 +55,17 @@ jobs:
           # Fetch current app spec so we can preserve env vars, scaling rules, etc.
           CURRENT=$(az rest --method GET --url "${ARM_URL}")
 
-          # Update only the image of the first container; leave everything else intact.
-          PATCHED=$(echo "${CURRENT}" | jq --arg img "${IMAGE}" \
+          # Update the image and re-inject the registry-password secret with its real
+          # value. The ARM GET response masks secret values (returns null), so we must
+          # supply them explicitly or the PATCH fails with ContainerAppSecretInvalid.
+          PATCHED=$(echo "${CURRENT}" | jq \
+            --arg img "${IMAGE}" \
+            --arg pwd "${{ secrets.REGISTRY_PASSWORD }}" \
             '.properties.template.containers[0].image = $img
+             | .properties.configuration.secrets = (
+                 [.properties.configuration.secrets[]? | select(.name != "registry-password")]
+                 + [{"name": "registry-password", "value": $pwd}]
+               )
              | del(.systemData, .identity.userAssignedIdentities[]?.clientSecretUrl)')
 
           az rest --method PATCH \
