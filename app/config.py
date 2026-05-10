@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     # Notification placeholders (populate to enable)
     # Email — Azure Communication Services, SendGrid, or SMTP
     admin_email: str = "admin@testhivenotes.com"
+    super_admin_email: str = "prasad@nexphase.com"
     azure_email_connection_string: str = ""
     # Slack — Incoming Webhook or Bot Token
     slack_webhook_url: str = ""

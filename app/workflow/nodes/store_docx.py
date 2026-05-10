@@ -126,6 +126,28 @@ async def store_docx_node(state: GraphState) -> GraphState:
         completed_at=completed_at,
     )
 
+    # ── Patch Cosmos DB session record with soap_blob_path + status ────────────
+    session_id_val: str = state.get("session_id", "")
+    therapist_id_val: str = state.get("therapist_id", "")
+    if session_id_val and therapist_id_val:
+        try:
+            from azure.cosmos.aio import CosmosClient
+            from azure.cosmos import PartitionKey
+            async with CosmosClient(settings.cosmos_endpoint, settings.cosmos_key) as _client:
+                _db = await _client.create_database_if_not_exists(id=settings.cosmos_db_name)
+                _container = await _db.create_container_if_not_exists(
+                    id=settings.cosmos_sessions_container,
+                    partition_key=PartitionKey(path="/therapist_id"),
+                )
+                _doc = await _container.read_item(item=session_id_val, partition_key=therapist_id_val)
+                _doc["soap_blob_path"] = docx_blob_path
+                _doc["status"] = "completed"
+                _doc["updated_at"] = completed_at
+                await _container.replace_item(item=session_id_val, body=_doc)
+                logger.info("store_docx: Cosmos session updated with soap_blob_path and status=completed")
+        except Exception as exc:
+            logger.warning("store_docx: failed to update Cosmos session — %s", exc)
+
     return {
         **state,
         "docx_blob_path": docx_blob_path,

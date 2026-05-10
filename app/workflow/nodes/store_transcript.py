@@ -14,6 +14,8 @@ Reads:   state["blob_folder_path"], state["raw_transcript"], state["transcript_t
 Writes:  state["transcript_blob_path"]   — path to the cleaned transcript blob
 """
 import logging
+from datetime import datetime, timezone
+
 from azure.storage.blob.aio import BlobServiceClient
 from azure.core.exceptions import HttpResponseError, ResourceExistsError
 from azure.storage.blob import ContentSettings
@@ -95,6 +97,27 @@ async def store_transcript_node(state: GraphState) -> GraphState:
         msg = f"store_transcript: Azure Blob Storage error — {exc.message}"
         logger.error(msg)
         return {**state, "error": msg}
+
+    # ── Patch Cosmos DB session record with transcript blob path ───────────────
+    session_id: str = state.get("session_id", "")
+    therapist_id: str = state.get("therapist_id", "")
+    if session_id and therapist_id:
+        try:
+            from azure.cosmos.aio import CosmosClient
+            from azure.cosmos import PartitionKey
+            async with CosmosClient(settings.cosmos_endpoint, settings.cosmos_key) as _client:
+                _db = await _client.create_database_if_not_exists(id=settings.cosmos_db_name)
+                _container = await _db.create_container_if_not_exists(
+                    id=settings.cosmos_sessions_container,
+                    partition_key=PartitionKey(path="/therapist_id"),
+                )
+                _doc = await _container.read_item(item=session_id, partition_key=therapist_id)
+                _doc["transcript_blob_path"] = clean_blob_path
+                _doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+                await _container.replace_item(item=session_id, body=_doc)
+                logger.info("store_transcript: Cosmos session updated with transcript_blob_path")
+        except Exception as exc:
+            logger.warning("store_transcript: failed to update Cosmos session — %s", exc)
 
     return {
         **state,

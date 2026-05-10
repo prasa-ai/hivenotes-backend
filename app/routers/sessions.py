@@ -46,7 +46,7 @@ from azure.storage.blob.aio import BlobServiceClient
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile, status
 
 from app.config import settings
-from app.models.session import SessionResponse, SessionUpdate, JobStatusResponse, SessionUploadResponse
+from app.models.session import SessionListResponse, SessionResponse, SessionUpdate, JobStatusResponse, SessionUploadResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -83,12 +83,29 @@ def _entity_to_session_response(entity: dict[str, Any]) -> SessionResponse:
         therapist_id=entity["therapist_id"],
         patient_id=entity["patient_id"],
         status=_normalize_optional(entity.get("status")),
+        session_type=_normalize_optional(entity.get("session_type")),
         filename=_normalize_optional(entity.get("filename")),
         content_type=_normalize_optional(entity.get("content_type")),
         audio_blob_path=_normalize_optional(entity.get("audio_blob_path")),
         soap_blob_path=_normalize_optional(entity.get("soap_blob_path")),
         transcript_blob_path=_normalize_optional(entity.get("transcript_blob_path")),
         session_at=_normalize_optional(entity.get("session_at")),
+        created_at=_normalize_optional(entity.get("created_at")),
+        updated_at=_normalize_optional(entity.get("updated_at")),
+    )
+
+
+def _entity_to_session_list_response(entity: dict[str, Any]) -> SessionListResponse:
+    """Map a Cosmos DB document to the trimmed SessionListResponse shape."""
+    return SessionListResponse(
+        id=entity.get("id") or entity.get("session_id") or entity.get("RowKey", ""),
+        therapist_id=entity["therapist_id"],
+        patient_id=entity["patient_id"],
+        status=_normalize_optional(entity.get("status")),
+        session_type=_normalize_optional(entity.get("session_type")),
+        session_at=_normalize_optional(entity.get("session_at")),
+        transcript_blob_path=_normalize_optional(entity.get("transcript_blob_path")),
+        soap_notes_blob_path=_normalize_optional(entity.get("soap_blob_path")),
         created_at=_normalize_optional(entity.get("created_at")),
         updated_at=_normalize_optional(entity.get("updated_at")),
     )
@@ -176,7 +193,7 @@ async def _download_docx_from_blob(docx_blob_path: str) -> str | None:
 
 @router.get(
     "/sessions",
-    response_model=list[SessionResponse],
+    response_model=list[SessionListResponse],
     summary="List sessions for a therapist or all sessions (admin)",
 )
 async def list_sessions(
@@ -184,20 +201,20 @@ async def list_sessions(
     therapist_id: str | None = Query(None, description="Therapist ID (partition key). If omitted, admin can list all sessions."),
     patient_first_name: str | None = Query(None, description="Filter by patient first name"),
     patient_last_name: str | None = Query(None, description="Filter by patient last name"),
-    include_docx: bool = Query(False, description="If true, download and include DOCX content as base64 for each session"),
 ):
     """When therapist_id is provided, returns sessions for that therapist.
-    When therapist_id is omitted, only admin users can list all sessions across all therapists.
+    When therapist_id is omitted, only admin users (prasad@nexphase.com) can list all sessions.
     """
-    # Try to get user_id from state (set by middleware) or from header
-    user_id = (getattr(request.state, "user_id", None) or request.headers.get("x-user-id") or "").strip().lower()
-    
+    user_id = (getattr(request.state, "user_id", None) or "").strip()
+    user_email = (getattr(request.state, "user_email", None) or "").strip().lower()
+    is_super_admin = user_email == settings.super_admin_email.lower()
+
     if not therapist_id and not user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either therapist_id or x-user-id must be provided.",
         )
-    
+
     client, container = await _get_container()
     try:
         if therapist_id:
@@ -216,26 +233,19 @@ async def list_sessions(
                 )
             results = []
             async for item in items:
-                docx_content_base64 = None
-                if include_docx:
-                    docx_content_base64 = await _download_docx_from_blob(item.get("soap_blob_path"))
-                results.append(SessionResponse(**item, docx_content_base64=docx_content_base64))
+                results.append(_entity_to_session_list_response(item))
             return results
         else:
-            # therapist_id is None; only admin can list all
-            if user_id != "admin":
+            # omitted therapist_id — super admin only
+            if not is_super_admin and user_id != "admin":
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Only admin can list all sessions.",
                 )
-            # Return all sessions across all therapists
             items = container.query_items(query="SELECT * FROM c")
             results = []
             async for item in items:
-                docx_content_base64 = None
-                if include_docx:
-                    docx_content_base64 = await _download_docx_from_blob(item.get("soap_blob_path"))
-                results.append(SessionResponse(**item, docx_content_base64=docx_content_base64))
+                results.append(_entity_to_session_list_response(item))
             return results
     except HTTPException:
         raise
@@ -453,6 +463,7 @@ async def create_session(
     patient_first_name: str = Form(..., description="Patient first name — hashed to patient_id, not stored (HIPAA)"),
     patient_last_name: str = Form(..., description="Patient last name — hashed to patient_id, not stored (HIPAA)"),
     session_at: str = Form(..., description="ISO 8601 session datetime"),
+    session_type: str = Form(default="", description="Free-text session type, e.g. 'Individual therapy'"),
     file: UploadFile = File(...),
 ):
     """
@@ -509,6 +520,7 @@ async def create_session(
         "therapist_id": therapist_id,
         "patient_id": patient_id,
         "status": "uploaded",
+        "session_type": session_type or None,
         "filename": original_filename,
         "content_type": mime,
         "audio_blob_path": audio_blob_path,
@@ -552,6 +564,7 @@ async def create_session(
         therapist_id=therapist_id,
         patient_id=patient_id,
         status="uploaded",
+        session_type=session_type or None,
         filename=original_filename,
         content_type=mime,
         audio_blob_path=audio_blob_path,

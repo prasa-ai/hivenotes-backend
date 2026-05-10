@@ -535,7 +535,9 @@ async def list_therapists(
     - If therapist_id is omitted, only admin users can list all therapists via x-user-id header.
     """
     # Try to get user_id from state (set by middleware) or from header
-    user_id = (getattr(request.state, "user_id", None) or request.headers.get("x-user-id") or "").strip().lower()
+    user_id = (getattr(request.state, "user_id", None) or "").strip()
+    user_email = (getattr(request.state, "user_email", None) or "").strip().lower()
+    is_super_admin = user_email == settings.super_admin_email.lower()
 
     if not therapist_id and not user_id:
         raise HTTPException(
@@ -564,7 +566,7 @@ async def list_therapists(
                 raise
             return therapists
 
-        if user_id != "admin":
+        if user_id != "admin" and not is_super_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only admin can list all therapists.",
