@@ -181,7 +181,7 @@ async def attach_session_context(request: Request, call_next):
 from fastapi import Depends
 
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"], dependencies=[Depends(require_auth)])
-app.include_router(therapist.router, prefix="/api/v1", tags=["account"], dependencies=[Depends(require_auth)])
+app.include_router(therapist.router, prefix="/api/v1", tags=["account"])  # POST /therapist is public; individual routes carry their own auth
 app.include_router(auth.router,      prefix="/api/v1", tags=["auth"])  # no auth required
 
 
@@ -224,6 +224,7 @@ def custom_openapi():
     _PUBLIC_PATHS = {
         "/api/v1/auth/login",
         "/api/v1/auth/providers",
+        "/api/v1/therapist",   # POST — therapist registration (no token needed)
         "/health",
     }
     for path, path_item in schema.get("paths", {}).items():

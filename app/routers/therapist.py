@@ -2,13 +2,14 @@ import logging
 import uuid
 from datetime import date, datetime, timezone
 from enum import Enum
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from azure.cosmos import PartitionKey
 from azure.cosmos import exceptions as cosmos_exc
 from azure.cosmos.aio import CosmosClient
 
 from app.config import settings
+from app.dependencies import require_auth
 from app.services.auth_utils import hash_password
 
 logger = logging.getLogger(__name__)
@@ -409,6 +410,7 @@ async def register_therapist(payload: TherapistCreate):
     "/therapist/{therapist_id}",
     response_model=TherapistResponse,
     summary="Get therapist details by therapist_id",
+    dependencies=[Depends(require_auth)],
 )
 async def get_therapist(therapist_id: str):
     """Fetch therapist details by therapist_id from Cosmos DB."""
@@ -445,6 +447,7 @@ async def get_therapist(therapist_id: str):
     "/therapist/{therapist_id}",
     response_model=TherapistResponse,
     summary="Update therapist profile fields",
+    dependencies=[Depends(require_auth)],
 )
 async def update_therapist(therapist_id: str, payload: TherapistUpdate):
     """Partially update a therapist's profile in Cosmos DB.
@@ -489,6 +492,7 @@ async def update_therapist(therapist_id: str, payload: TherapistUpdate):
     "/therapist/{therapist_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a therapist account",
+    dependencies=[Depends(require_auth)],
 )
 async def delete_therapist(therapist_id: str):
     """Delete a therapist account from Cosmos DB."""
@@ -524,6 +528,7 @@ async def delete_therapist(therapist_id: str):
     "/therapists",
     response_model=list[TherapistResponse],
     summary="List therapists (admin can list all)",
+    dependencies=[Depends(require_auth)],
 )
 async def list_therapists(
     request: Request,
