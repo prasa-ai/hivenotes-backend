@@ -9,6 +9,7 @@ from azure.cosmos import exceptions as cosmos_exc
 from azure.cosmos.aio import CosmosClient
 
 from app.config import settings
+from app.services.auth_utils import hash_password
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -280,6 +281,7 @@ async def register_therapist(payload: TherapistCreate):
     doc = {
         "id":                  therapist_id,
         "therapist_id":        therapist_id,
+        "password_hash":       hash_password(payload.password),
         "reference_id":        payload.reference_id or "",
         "first_name":          payload.first_name,
         "last_name":           payload.last_name,

@@ -79,5 +79,10 @@ class Settings(BaseSettings):
     # LangGraph checkpointing — set to true to enable Azure Table Storage persistence
     enable_checkpoint: bool = False
 
+    # JWT — used for password-based login tokens
+    jwt_secret_key: str = ""
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 480  # 8 hours
+
 
 settings = Settings()

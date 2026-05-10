@@ -111,8 +111,12 @@ app = FastAPI(
         {
             "name": "auth",
             "description": (
-                "SSO provider discovery and OAuth2 callback. Currently returns login "
-                "URLs for configured Entra and Google providers. "
+                "Authentication endpoints.\\n\\n"
+                "**Password login** — `POST /api/v1/auth/login` accepts an email and password, "
+                "verifies the bcrypt hash stored at registration, and returns a signed JWT bearer token. "
+                "Copy the `access_token` and use the **Authorize** button (🔒) to authenticate "
+                "all subsequent requests.\\n\\n"
+                "**SSO provider discovery** — returns login URLs for configured Entra and Google providers. "
                 "Token exchange is a stub — not yet implemented."
             ),
         },
@@ -183,15 +187,24 @@ def custom_openapi():
     )
 
     schema.setdefault("components", {}).setdefault("securitySchemes", {})
+    schema["components"]["securitySchemes"]["BearerAuth"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": (
+            "JWT obtained from **POST /api/v1/auth/login**. "
+            "Paste the `access_token` value here."
+        ),
+    }
     schema["components"]["securitySchemes"]["X-User-Id"] = {
         "type": "apiKey",
         "in": "header",
         "name": "X-User-Id",
-        "description": "Developer user ID (replaces auth token in local testing)",
+        "description": "Developer user ID header — dev/test fallback only (not for production).",
     }
 
-    # Apply the security scheme globally so every endpoint shows the lock icon
-    schema["security"] = [{"X-User-Id": []}]
+    # Apply both schemes globally so every endpoint shows the lock icon
+    schema["security"] = [{"BearerAuth": []}, {"X-User-Id": []}]
 
     app.openapi_schema = schema
     return app.openapi_schema
