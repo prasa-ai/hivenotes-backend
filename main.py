@@ -5,6 +5,7 @@ import logging.config
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from app.dependencies import require_auth
 from app.routers import sessions
 from app.routers import therapist
 from app.routers import auth
@@ -94,7 +95,9 @@ app = FastAPI(
         "and retrieve session records.\n"
         "- **health** — Liveness probe.\n\n"
         "## Authentication\n"
-        "Use the **Authorize** button to set `X-User-Id` (dev) or a Bearer token (prod)."
+        "Call **POST /api/v1/auth/login** with your email and password to receive a JWT.\n"
+        "Then click the **Authorize** button (🔒) and paste the `access_token` value "
+        "into the **BearerAuth** field. All endpoints except the auth routes require a valid token."
     ),
     version="0.4.0",
     openapi_tags=[
@@ -149,22 +152,37 @@ app.add_middleware(
 @app.middleware("http")
 async def attach_session_context(request: Request, call_next):
     """
-    Read the X-Session-Id header sent by the Flutter app on every request
-    and attach it to request.state so any route handler can access it.
-    Also attaches X-User-Id for development; replace with token validation
-    in production.
+    Populates request.state.session_id and request.state.user_id for every request.
+    user_id is decoded from the JWT Bearer token so route handlers that read it
+    work without an extra Depends call.
     """
+    from jose import jwt as _jwt, JWTError
+
     request.state.session_id = request.headers.get("X-Session-Id")
-    # Production: extract user_id from validated Bearer token here.
-    # Dev fallback: trust the X-User-Id header (remove before going live).
-    request.state.user_id = request.headers.get("X-User-Id")
+
+    user_id: str | None = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer ") and settings.jwt_secret_key:
+        try:
+            payload = _jwt.decode(
+                auth_header[7:],
+                settings.jwt_secret_key,
+                algorithms=[settings.jwt_algorithm],
+            )
+            user_id = payload.get("sub")
+        except JWTError:
+            pass
+
+    request.state.user_id = user_id
     response = await call_next(request)
     return response
 
 
-app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
-app.include_router(therapist.router,  prefix="/api/v1", tags=["account"])
-app.include_router(auth.router,     prefix="/api/v1", tags=["auth"])
+from fastapi import Depends
+
+app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"], dependencies=[Depends(require_auth)])
+app.include_router(therapist.router, prefix="/api/v1", tags=["account"], dependencies=[Depends(require_auth)])
+app.include_router(auth.router,      prefix="/api/v1", tags=["auth"])  # no auth required
 
 
 @app.get("/health", tags=["health"])
@@ -196,23 +214,36 @@ def custom_openapi():
             "Paste the `access_token` value here."
         ),
     }
-    schema["components"]["securitySchemes"]["X-User-Id"] = {
-        "type": "apiKey",
-        "in": "header",
-        "name": "X-User-Id",
-        "description": "Developer user ID header — dev/test fallback only (not for production).",
-    }
+    # Remove the auto-generated HTTPBearer scheme FastAPI adds via Depends(http_bearer)
+    # so Swagger only shows one unified "BearerAuth" scheme.
+    schema["components"]["securitySchemes"].pop("HTTPBearer", None)
 
-    # Apply both schemes globally so every endpoint shows the lock icon
-    schema["security"] = [{"BearerAuth": []}, {"X-User-Id": []}]
+    # Apply BearerAuth globally — then clear it on public (auth + health) routes.
+    schema["security"] = [{"BearerAuth": []}]
+
+    _PUBLIC_PATHS = {
+        "/api/v1/auth/login",
+        "/api/v1/auth/providers",
+        "/health",
+    }
+    for path, path_item in schema.get("paths", {}).items():
+        is_public = path in _PUBLIC_PATHS or path.startswith("/api/v1/auth/{provider}")
+        for operation in path_item.values():
+            if not isinstance(operation, dict):
+                continue
+            if is_public:
+                operation["security"] = []
+            else:
+                # Replace FastAPI's auto-generated HTTPBearer with our named BearerAuth
+                op_security = operation.get("security", [])
+                operation["security"] = [
+                    {"BearerAuth": []} if list(s.keys()) == ["HTTPBearer"] else s
+                    for s in op_security
+                ] or [{"BearerAuth": []}]
 
     app.openapi_schema = schema
     return app.openapi_schema
 
 
 app.openapi = custom_openapi
-
-@app.get("/health", tags=["health"])
-async def health_check():
-    return {"status": "ok"}
 
